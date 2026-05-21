@@ -240,7 +240,7 @@ The key benefit: it finds the right policy even if the user's wording is complet
 ### 1. Clone the repository, create a virtual environment, and install Python packages
 
 ```bash
-git clone https://github.com/NCUIM-Lab710-Teaching/IM2002-DBMGT-Train-v2 transitflow
+git clone https://github.com/NCUIM-Lab710-Teaching/IM2002-DBMGT-Train-final transitflow
 cd transitflow
 ```
 
