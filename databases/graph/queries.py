@@ -53,43 +53,39 @@ def query_shortest_route(
     network: str = "auto",
 ) -> dict:
     """
-    Find the fastest path between two stations, minimising total travel time.
-    Uses shortestPath by travel_time_min.
-
-    Args:
-        origin_id:       e.g. "MS01" or "NR01"
-        destination_id:  e.g. "MS09" or "NR05"
-        network:         "metro", "rail", or "auto" (inferred from IDs)
-
-    Returns:
-        dict with keys: found, origin_id, destination_id,
-                        total_time_min, stations (list of dicts), legs (list of dicts)
+    Find the fastest path using Dijkstra algorithm by travel_time_min.
+    Uses apoc.algo.dijkstra (requires APOC plugin).
     """
     with _driver() as driver:
         with driver.session() as session:
-            # Infer network from station IDs if network="auto"
+            # Infer network
             inferred_network = network
             if network == "auto":
-                if origin_id.startswith("MS"):
-                    inferred_network = "metro"
-                elif origin_id.startswith("NR"):
-                    inferred_network = "national_rail"
+                inferred_network = "metro" if origin_id.startswith("MS") else "national_rail"
             
-            # Build network filter for Cypher
-            network_filter = ""
-            if inferred_network in ("metro", "national_rail"):
-                network_filter = f" AND r.network = '{inferred_network}'"
-            
-            # Find shortest path by summing travel_time_min
+            # Cypher with Dijkstra
             query = f"""
             MATCH (origin:Station {{station_id: $origin_id}})
             MATCH (dest:Station {{station_id: $dest_id}})
-            MATCH path = shortestPath((origin)-[r:ROUTE*]->(dest))
-            WHERE {f"all(rel IN relationships(path) WHERE rel.network = '{inferred_network}')" if inferred_network != "auto" else "true"}
-            WITH path, 
-                 [n IN nodes(path) | {{station_id: n.station_id, name: n.name, network: n.network}}] AS stations,
-                 reduce(total_time = 0, rel IN relationships(path) | total_time + rel.travel_time_min) AS total_time_min,
+            
+            CALL apoc.algo.dijkstra(
+                origin,
+                dest,
+                'ROUTE',
+                'travel_time_min'
+            ) YIELD path, weight AS total_time_min
+            
+            // 如果指定單一網絡，過濾路徑
+            {"WHERE all(rel IN relationships(path) WHERE rel.network = '" + inferred_network + "')" if inferred_network != "auto" else ""}
+            
+            WITH path, total_time_min,
+                 [n IN nodes(path) | {{
+                    station_id: n.station_id,
+                    name: n.name,
+                    network: n.network
+                 }}] AS stations,
                  relationships(path) AS rels
+            
             RETURN 
                 true AS found,
                 stations,
@@ -102,20 +98,23 @@ def query_shortest_route(
                 }}] AS legs
             """
             
-            result = session.run(query, origin_id=origin_id, dest_id=destination_id)
-            record = result.single()
+            try:
+                result = session.run(query, origin_id=origin_id, dest_id=destination_id)
+                record = result.single()
+                
+                if record:
+                    return dict(record)
+            except Exception as e:
+                print(f"Dijkstra 查詢失敗: {e}")
             
-            if record:
-                return dict(record)
-            else:
-                return {
-                    "found": False,
-                    "origin_id": origin_id,
-                    "destination_id": destination_id,
-                    "total_time_min": None,
-                    "stations": [],
-                    "legs": []
-                }
+            return {
+                "found": False,
+                "origin_id": origin_id,
+                "destination_id": destination_id,
+                "total_time_min": None,
+                "stations": [],
+                "legs": []
+            }
 
 
 # ── CHEAPEST ROUTE (Dijkstra by fare) ────────────────────────────────────────
