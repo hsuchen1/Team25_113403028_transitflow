@@ -51,7 +51,163 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
   ============================================================ -->
 
 ```sql
--- TODO: paste your final schema.sql contents here after team review
+-- Users and Credentials
+CREATE TABLE users (
+    user_id VARCHAR(20) PRIMARY KEY,
+    full_name VARCHAR(100),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    date_of_birth DATE,
+    registered_at TIMESTAMP,
+    is_active BOOLEAN,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE user_credentials (
+    c_id SERIAL PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    password_hash VARCHAR(255) NOT NULL,
+    salt VARCHAR(255) NOT NULL,
+    secret_question VARCHAR(255),
+    secret_answer_hash VARCHAR(255) NOT NULL,
+    deleted_at TIMESTAMP
+);
+
+-- Stations
+CREATE TABLE metro_stations (
+    station_id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    is_interchange_metro BOOLEAN,
+    is_interchange_national_rail BOOLEAN,
+    interchange_national_rail_station_id VARCHAR(20),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE metro_station_lines (
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    line VARCHAR(10),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_stations (
+    station_id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    is_interchange_national_rail BOOLEAN,
+    is_interchange_metro BOOLEAN,
+    interchange_metro_station_id VARCHAR(20),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_station_lines (
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    line VARCHAR(10),
+    deleted_at TIMESTAMP
+);
+
+-- Schedules
+CREATE TABLE metro_schedules (
+    schedule_id VARCHAR(20) PRIMARY KEY,
+    line VARCHAR(10),
+    direction VARCHAR(20),
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    first_train_time TIME,
+    last_train_time TIME,
+    base_fare_usd NUMERIC(10,2),
+    per_stop_rate_usd NUMERIC(10,2),
+    frequency_min INTEGER,
+    stops_in_order JSONB,
+    travel_time_from_origin_min JSONB,
+    operates_on JSONB,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_schedules (
+    schedule_id VARCHAR(20) PRIMARY KEY,
+    line VARCHAR(10),
+    service_type VARCHAR(20),
+    direction VARCHAR(20),
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    first_train_time TIME,
+    last_train_time TIME,
+    frequency_min INTEGER,
+    stops_in_order JSONB,
+    passed_through_stations JSONB,
+    travel_time_from_origin_min JSONB,
+    fare_classes JSONB,
+    operates_on JSONB,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_seat_layouts (
+    layout_id VARCHAR(20) PRIMARY KEY,
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
+    coaches JSONB,
+    deleted_at TIMESTAMP
+);
+
+-- Bookings, Trips, Payments, Feedback
+CREATE TABLE national_rail_bookings (
+    booking_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    travel_date DATE,
+    departure_time TIME,
+    ticket_type VARCHAR(20),
+    fare_class VARCHAR(20),
+    coach VARCHAR(5),
+    seat_id VARCHAR(10),
+    stops_travelled INTEGER,
+    amount_usd NUMERIC(10,2),
+    status VARCHAR(20),
+    booked_at TIMESTAMP,
+    travelled_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE metro_trips (
+    trip_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id),
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    travel_date DATE,
+    ticket_type VARCHAR(20),
+    day_pass_ref VARCHAR(20),
+    stops_travelled INTEGER,
+    amount_usd NUMERIC(10,2),
+    status VARCHAR(20),
+    purchased_at TIMESTAMP,
+    travelled_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE payments (
+    payment_id VARCHAR(20) PRIMARY KEY,
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    amount_usd NUMERIC(10,2),
+    method VARCHAR(50),
+    status VARCHAR(20),
+    paid_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE feedback (
+    feedback_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    rating INTEGER,
+    comment TEXT,
+    submitted_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
 ```
 
 ## Agreed Graph Schema
@@ -116,9 +272,13 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 
 <!-- Add entries as you make decisions. Format: "Decision: X. Why: Y." -->
 
-- [ ] Schema design: TODO — add your table/column decisions here
+- [x] Schema design:
+  - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
+  - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
+  - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
+  - **Decision:** Use `JSONB` for `stops_in_order`, `travel_time_from_origin_min`, `operates_on`, `coaches`. **Why:** Easier to query order using `jsonb_array_elements_text WITH ORDINALITY`, reducing join overhead.
+  - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
 - [ ] Graph schema: TODO — add your node label and relationship type decisions here
-- [ ] (example) Metro schedule stop ordering: using `jsonb_array_elements` approach — easier to debug than containment operators
 
 ## Prompts That Worked
 
