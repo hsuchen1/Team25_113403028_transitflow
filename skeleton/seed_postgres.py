@@ -15,6 +15,7 @@ import sys
 
 import psycopg2
 from psycopg2.extras import execute_values
+from argon2 import PasswordHasher
 
 # ── resolve paths ────────────────────────────────────────────────────────────
 SCRIPT_DIR  = os.path.dirname(os.path.abspath(__file__))
@@ -55,10 +56,48 @@ def insert_many(cur, table, columns, rows):
 # ── seeders ──────────────────────────────────────────────────────────────────
 
 def seed_metro_stations(cur):
+    """
+    INSERT INTO metro_stations
+    欄位：station_id, name, is_interchange_metro,
+          is_interchange_national_rail, interchange_national_rail_station_id
+    來源：metro_stations.json
+    跳過：lines（交給 seed_metro_station_lines）
+          adjacent_stations（交給 Neo4j）
+          interchange_metro_lines（冗餘，已有 is_interchange_metro）
+    """
     data = load("metro_stations.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    # Each item in `data` is a dict — inspect the JSON to see available fields.
-    pass
+    rows = []
+    for station in data:
+        rows.append((
+            station["station_id"],
+            station["name"],
+            station["is_interchange_metro"],
+            station["is_interchange_national_rail"],
+            station.get("interchange_national_rail_station_id"),
+        ))
+
+    n = insert_many(cur, "metro_stations",
+                    ["station_id", "name", "is_interchange_metro",
+                     "is_interchange_national_rail",
+                     "interchange_national_rail_station_id"],
+                    rows)
+    print(f"  metro_stations: {n} rows")
+
+
+def seed_metro_station_lines(cur):
+    data = load("metro_stations.json")
+    rows = []
+    for station in data:
+        for line in station["lines"]:
+            rows.append((
+                station["station_id"],
+                line,
+            ))
+
+    n = insert_many(cur, "metro_station_lines",
+                    ["station_id", "line"],
+                    rows)
+    print(f"  metro_station_lines: {n} rows")
 
 
 def seed_national_rail_stations(cur):
@@ -85,10 +124,56 @@ def seed_seat_layouts(cur):
     pass
 
 
+def seed_user_credentials(cur):
+    data = load("registered_users.json")
+    ph = PasswordHasher()
+
+    for user in data:
+        password_hash = ph.hash(user["password"])
+        secret_answer_hash = ph.hash(user["secret_answer"])
+
+        cur.execute(
+            """
+            INSERT INTO user_credentials
+                (user_id, password_hash, secret_question, secret_answer_hash)
+            VALUES (%s, %s, %s, %s)
+            ON CONFLICT DO NOTHING
+            """,
+            (
+                user["user_id"],
+                password_hash,
+                user["secret_question"],
+                secret_answer_hash,
+            )
+        )
+
+    print(f"  user_credentials: {len(data)} rows")
+
+
 def seed_users(cur):
     data = load("registered_users.json")
-    # TODO: Design your table schema, then implement the INSERT logic here.
-    pass
+    rows = []
+    for user in data:
+        parts = user["full_name"].split(" ", 1)
+        first_name = parts[0]
+        last_name = parts[1] if len(parts) > 1 else ""
+
+        rows.append((
+            user["user_id"],
+            first_name,
+            last_name,
+            user["email"],
+            user.get("phone"),
+            user["date_of_birth"],
+            user["registered_at"],
+            user["is_active"],
+        ))
+
+    n = insert_many(cur, "users",
+                    ["user_id", "first_name", "last_name", "email",
+                        "phone", "date_of_birth", "registered_at", "is_active"],
+                    rows)
+    print(f"  users: {n} rows")
 
 
 def seed_national_rail_bookings(cur):
@@ -126,11 +211,13 @@ def main():
     try:
         print("Seeding tables (dependency order):")
         seed_metro_stations(cur)
+        seed_metro_station_lines(cur)
         seed_national_rail_stations(cur)
         seed_metro_schedules(cur)
         seed_national_rail_schedules(cur)
         seed_seat_layouts(cur)
         seed_users(cur)
+        seed_user_credentials(cur)
         seed_national_rail_bookings(cur)
         seed_metro_travels(cur)
         seed_payments(cur)
