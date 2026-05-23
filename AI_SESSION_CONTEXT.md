@@ -212,21 +212,19 @@ CREATE TABLE feedback (
 
 ## Agreed Graph Schema
 
-<!-- ============================================================
-  FILL THIS IN after your team agrees on Neo4j node labels and
-  relationship types.
-  ============================================================ -->
-
-```
 Node labels:
-- TODO
+- `Station` (Generic label for all stations)
+- `MetroStation` (Specific label for metro stations)
+- `NationalRailStation` (Specific label for national rail stations)
 
 Relationship types:
-- TODO
+- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`)
+- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`)
+- `[:INTERCHANGE_WITH]` (Properties: `transfer_time_min` e.g. 5)
 
 Key properties:
-- TODO
-```
+- Node: `station_id` (Unique constraint), `name`
+- Edge: `travel_time_min` or `transfer_time_min` (Used as weights for shortest path routing)
 
 ## Function Signatures We Are Implementing
 
@@ -278,7 +276,9 @@ def query_station_connections(station_id: str) -> list[dict]: ...
   - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
   - **Decision:** Use `JSONB` for `stops_in_order`, `travel_time_from_origin_min`, `operates_on`, `coaches`. **Why:** Easier to query order using `jsonb_array_elements_text WITH ORDINALITY`, reducing join overhead.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
-- [ ] Graph schema: TODO — add your node label and relationship type decisions here
+- [x] Graph schema:
+  - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
+  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
 
 ## Prompts That Worked
 
