@@ -68,7 +68,6 @@ CREATE TABLE user_credentials (
     c_id SERIAL PRIMARY KEY,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     password_hash VARCHAR(255) NOT NULL,
-    salt VARCHAR(255) NOT NULL,
     secret_question VARCHAR(255),
     secret_answer_hash VARCHAR(255) NOT NULL,
     deleted_at TIMESTAMP
@@ -276,6 +275,7 @@ def query_station_connections(station_id: str) -> list[dict]: ...
   - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
   - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
+  - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
   - **Decision:** Use `JSONB` for `stops_in_order`, `travel_time_from_origin_min`, `operates_on`, `coaches`. **Why:** Easier to query order using `jsonb_array_elements_text WITH ORDINALITY`, reducing join overhead.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
 - [x] Graph schema:
