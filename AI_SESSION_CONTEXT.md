@@ -136,34 +136,26 @@ TODO — add after implementing your first function
 
 —————資料庫專題要注意—————
 
-確認business rules 
-利用soft delete處理
+# TransitFlow 專案開發與資料庫設計規範
 
-#密碼：
+## 📌 一、核心設計與商業邏輯 (Business Logic & Core Design)
+- **商業規則**：務必徹底確認並遵循專案的 Business Rules。
+- **刪除機制**：必須利用軟刪除 (Soft Delete) 處理，嚴禁直接從資料庫實體抹除資料。
+- **權限控管**：使用者在「未登入」狀態下，絕對無法撈取任何訂票紀錄。
+- **主鍵設計 (PK)**：由團隊自行決定使用 **UUID v7**（建議以 `binary(16)` 儲存以節省空間）或 **Auto Increments** (自動遞增)。
+- **驗收標準**：重點在於檢視「回傳內容」是否正確。若因 AI 助理能力不足導致錯誤可忽視。
 
-1.不能用明碼存、不能放user table、hash不能用MD5、SHA（最強：argon2id)
+## 🔒 二、資安與密碼防護 (Security & Credential Management)
+- **演算法限制**：嚴禁明碼儲存。Hash 演算法禁止使用 MD5、SHA 系列，強烈建議使用 **argon2id**。
+- **獨立資料表**：密碼嚴禁存放在 `user` 資料表中，必須抽離至獨立資料表（如 `user_credentials`）。
+  - **欄位規範**：包含 `c_id` (Surrogate Key / 代理鍵)、`u_id` (Foreign Key / 外鍵)、hash、salt。
+  - **權限控管**：必須對此表設定嚴格的存取權限，亦可考慮獨立存放在另一個 Schema。
+- **Salt 生成**：必須使用 **CSPRNG** 生成，並於資料庫中設定妥當的字元長度。
+- **驗證位置**：Hash 比對與驗證可在 Web Server 端或資料庫端執行。
+- **帳號救援**：必須實作設定「秘密問題 (Secret Question)」與答案的比對機制。
 
-2.要在另外一個table（user_credentials，user id當fk？)，跟salt放一起，要設存取權限（看要不要存成另外schema)
-
-user_credentials：c_id(要加這個作為surrogate key)、u_id、hash...
-
-3.用uuid v7（用binary(16)節省空間）vs auto increments
-  這個應該能自己決定
-
-4.生成salt可用CSPRNG，記得資料庫要設定此字元長度
-
-比對hash可在web server或資料庫
-
-設定secret question
-
-先設計好資料表->ex: seedpostgres.py、schema.sql、registered_users.json要能互相配合
-
-seed vector已經寫好了不用自己寫（目前就一個文件一個向量）
-
-沒登入就沒可能撈到訂票紀錄
-
-重點看回傳內容，AI不夠強導致的錯誤沒關係
-
-timeout 300秒可以改（在skeleton ->config.py）
-
-feedback.json目前還沒有實作什麼，可以自己決定
+## 📁 三、專案檔案配合與實作細節 (Implementation & Configurations)
+- **架構優先 (Schema-First)**：先設計好資料表。務必確保 `schema.sql`、`seed_postgres.py` 與 `registered_users.json` 三者的欄位與邏輯完美配合。
+- **向量資料庫 (Vector DB)**：`seed_vectors.py` 已經實作完畢，開發時無需修改（目前架構為一個文件對應一個向量）。
+- **逾時設定 (Timeout)**：系統預設為 300 秒，如需修改可至 `skeleton/config.py` 中調整。
+- **開放空間**：`feedback.json` 目前尚未有具體的實作規範，由團隊自行決定如何應用與發揮。
