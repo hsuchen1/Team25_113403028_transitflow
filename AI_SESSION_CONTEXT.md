@@ -139,10 +139,12 @@ TODO — add after implementing your first function
 確認business rules 
 利用soft delete處理
 
-密碼：
+#密碼：
+
 1.不能用明碼存、不能放user table、hash不能用MD5、SHA（最強：argon2id)
 
-2.在另外一個table（user_credentials，user id當fk？)，跟salt放一起，要設存取權限（看要不要存成另外schema)
+2.要在另外一個table（user_credentials，user id當fk？)，跟salt放一起，要設存取權限（看要不要存成另外schema)
+
 user_credentials：c_id(要加這個作為surrogate key)、u_id、hash...
 
 3.用uuid v7（用binary(16)節省空間）vs auto increments
