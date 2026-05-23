@@ -150,7 +150,7 @@ TODO — add after implementing your first function
 - **獨立資料表**：密碼嚴禁存放在 `user` 資料表中，必須抽離至獨立資料表（如 `user_credentials`）。
   - **欄位規範**：包含 `c_id` (Surrogate Key / 代理鍵)、`u_id` (Foreign Key / 外鍵)、hash、salt。
   - **權限控管**：必須對此表設定嚴格的存取權限，亦可考慮獨立存放在另一個 Schema。
-- **Salt 生成**：必須使用 **CSPRNG** 生成，並於資料庫中設定妥當的字元長度。
+- **Salt 生成**：可用 **CSPRNG** 生成，並於資料庫中設定妥當的字元長度。
 - **驗證位置**：Hash 比對與驗證可在 Web Server 端或資料庫端執行。
 - **帳號救援**：必須實作設定「秘密問題 (Secret Question)」與答案的比對機制。
 
