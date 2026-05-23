@@ -45,9 +45,12 @@ services:
       PGADMIN_DEFAULT_PASSWORD: admin
     ports:
       - "5051:80"
+    volumes:
+      - pgadmin_data_v2a:/var/lib/pgadmin
     depends_on:
       - postgres
 
 volumes:
   postgres_data_v2a:
   neo4j_data_v2a:
+  pgadmin_data_v2a:
