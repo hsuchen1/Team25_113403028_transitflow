@@ -54,7 +54,8 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
 -- Users and Credentials
 CREATE TABLE users (
     user_id VARCHAR(20) PRIMARY KEY,
-    full_name VARCHAR(100),
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
     date_of_birth DATE,
@@ -271,6 +272,7 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 <!-- Add entries as you make decisions. Format: "Decision: X. Why: Y." -->
 
 - [x] Schema design:
+  - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
   - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
   - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
