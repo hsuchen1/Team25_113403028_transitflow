@@ -54,6 +54,7 @@ def query_shortest_route(
     """
     Find the fastest path between two stations, minimising total travel time.
     Uses apoc.algo.dijkstra (APOC required; enabled in docker-compose.yml).
+    Supports both same-network and cross-network (interchange) routes.
 
     Args:
         origin_id:       e.g. "MS01" or "NR01"
@@ -73,34 +74,42 @@ def query_shortest_route(
             "reason": "Origin and destination are the same"
         }
     
-    # Infer network from IDs if "auto"
-    if network == "auto":
-        origin_is_metro = origin_id.startswith("MS")
-        dest_is_metro = destination_id.startswith("MS")
-        
-        if origin_is_metro != dest_is_metro:
-            return {
-                "found": False,
-                "origin_id": origin_id,
-                "destination_id": destination_id,
-                "reason": "Origin and destination are on different networks"
-            }
-        
-        network = "metro" if origin_is_metro else "rail"
+    # Determine network types from IDs
+    origin_is_metro = origin_id.startswith("MS")
+    dest_is_metro = destination_id.startswith("MS")
     
-    # Determine the node label based on network
-    node_label = "MetroStation" if network == "metro" else "NationalRailStation"
+    # Check if this is a cross-network query
+    is_cross_network = origin_is_metro != dest_is_metro
+    
+    # Infer network parameter for same-network queries
+    if network == "auto" and not is_cross_network:
+        network = "metro" if origin_is_metro else "rail"
     
     with _driver() as driver:
         with driver.session() as session:
-            # Execute Dijkstra algorithm
-            cypher = f"""
-            MATCH (start:{node_label} {{station_id: $origin_id}})
-            MATCH (end:{node_label} {{station_id: $destination_id}})
-            CALL apoc.algo.dijkstra(start, end, 'CONNECTS_TO_ON_LINE>', 'travel_time_min')
-            YIELD path, weight
-            RETURN path, weight
-            """
+            if is_cross_network:
+                # Cross-network query: use both CONNECTS_TO_ON_LINE and INTERCHANGE_WITH
+                # Dijkstra requires all nodes to be from the same query pattern
+                # So we use allSimplePaths to find a single best path based on travel_time_min
+                cypher = """
+                MATCH (start {station_id: $origin_id})
+                MATCH (end {station_id: $destination_id})
+                CALL apoc.algo.allSimplePaths(start, end, 'CONNECTS_TO_ON_LINE>|INTERCHANGE_WITH>', 20)
+                YIELD path
+                RETURN path, reduce(total=0, rel IN relationships(path) | total + rel.travel_time_min) as weight
+                ORDER BY weight ASC
+                LIMIT 1
+                """
+            else:
+                # Same-network query: use only CONNECTS_TO_ON_LINE
+                node_label = "MetroStation" if origin_is_metro else "NationalRailStation"
+                cypher = f"""
+                MATCH (start:{node_label} {{station_id: $origin_id}})
+                MATCH (end:{node_label} {{station_id: $destination_id}})
+                CALL apoc.algo.dijkstra(start, end, 'CONNECTS_TO_ON_LINE>', 'travel_time_min')
+                YIELD path, weight
+                RETURN path, weight
+                """
             
             result = session.run(cypher, origin_id=origin_id, destination_id=destination_id)
             record = result.single()
@@ -132,10 +141,12 @@ def query_shortest_route(
             # Build legs list (individual connections with travel times)
             legs = []
             for rel in relationships:
+                # Handle both CONNECTS_TO_ON_LINE and INTERCHANGE_WITH relationships
+                line = rel.get("line", "INTERCHANGE")  # INTERCHANGE_WITH has no line property
                 legs.append({
                     "from": rel.start_node["station_id"],
                     "to": rel.end_node["station_id"],
-                    "line": rel["line"],
+                    "line": line,
                     "travel_time_min": rel["travel_time_min"]
                 })
             
@@ -379,8 +390,9 @@ def query_alternative_routes(
 
 def query_interchange_path(origin_id: str, destination_id: str) -> dict:
     """
-    Find a path between a metro station and a national rail station (or vice versa)
+    Find the fastest path between a metro station and a national rail station (or vice versa)
     crossing the network boundary via interchange relationships.
+    Uses weighted path calculation to find the optimal route.
 
     Args:
         origin_id:       e.g. "MS03" (metro) or "NR05" (national rail)
@@ -415,6 +427,7 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
     with _driver() as driver:
         with driver.session() as session:
             # Build Cypher query based on network direction
+            # Find ALL simple paths, then calculate weights and return the shortest one
             if origin_is_metro:
                 # Metro -> Rail
                 cypher = """
@@ -423,7 +436,8 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
                 CALL apoc.algo.allSimplePaths(start, end, 'CONNECTS_TO_ON_LINE>|INTERCHANGE_WITH>', 20)
                 YIELD path
                 WHERE size([r IN relationships(path) WHERE type(r) = 'INTERCHANGE_WITH']) = 1
-                RETURN path
+                RETURN path, reduce(total=0, rel IN relationships(path) | total + rel.travel_time_min) as weight
+                ORDER BY weight ASC
                 LIMIT 1
                 """
             else:
@@ -434,7 +448,8 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
                 CALL apoc.algo.allSimplePaths(start, end, 'CONNECTS_TO_ON_LINE>|INTERCHANGE_WITH>', 20)
                 YIELD path
                 WHERE size([r IN relationships(path) WHERE type(r) = 'INTERCHANGE_WITH']) = 1
-                RETURN path
+                RETURN path, reduce(total=0, rel IN relationships(path) | total + rel.travel_time_min) as weight
+                ORDER BY weight ASC
                 LIMIT 1
                 """
             
@@ -476,7 +491,6 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
                 leg_time = rel.get("travel_time_min", 0)
                 total_time_min += leg_time
                 
-                # INTERCHANGE_WITH has 0 travel time, CONNECTS_TO_ON_LINE has travel_time_min
                 legs.append({
                     "from": rel.start_node["station_id"],
                     "to": rel.end_node["station_id"],
