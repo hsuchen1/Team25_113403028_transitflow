@@ -174,7 +174,7 @@ def seed():
                 rail_links_count += 1
         print(f"  Created {rail_links_count} National Rail CONNECTS_TO_ON_LINE relationships")
 
-        # Create INTERCHANGE_WITH relationships between metro and rail stations
+        # Create INTERCHANGE_TO relationships between metro and rail stations
         # Interchange time is fixed at 5 minutes for all interchange points
         # Create bidirectional relationships: metro->rail and rail->metro
         interchange_count = 0
@@ -184,14 +184,14 @@ def seed():
                     """
                     MATCH (metro:MetroStation {station_id: $metro_id})
                     MATCH (rail:NationalRailStation {station_id: $rail_id})
-                    CREATE (metro)-[:INTERCHANGE_WITH {travel_time_min: 5}]->(rail)
-                    CREATE (rail)-[:INTERCHANGE_WITH {travel_time_min: 5}]->(metro)
+                    CREATE (metro)-[:INTERCHANGE_TO {travel_time_min: 5}]->(rail)
+                    CREATE (rail)-[:INTERCHANGE_TO {travel_time_min: 5}]->(metro)
                     """,
                     metro_id=station["station_id"],
                     rail_id=station["interchange_national_rail_station_id"]
                 )
                 interchange_count += 2  # Count both directions
-        print(f"  Created {interchange_count} INTERCHANGE_WITH relationships")
+        print(f"  Created {interchange_count} INTERCHANGE_TO relationships")
 
     driver.close()
     print("\nNeo4j graph seeded successfully.")
