@@ -51,26 +51,180 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
   ============================================================ -->
 
 ```sql
--- TODO: paste your final schema.sql contents here after team review
+-- Users and Credentials
+CREATE TABLE users (
+    user_id VARCHAR(20) PRIMARY KEY,
+    first_name VARCHAR(50),
+    last_name VARCHAR(50),
+    email VARCHAR(255) UNIQUE NOT NULL,
+    phone VARCHAR(20),
+    date_of_birth DATE,
+    registered_at TIMESTAMP,
+    is_active BOOLEAN,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE user_credentials (
+    c_id SERIAL PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    password_hash VARCHAR(255) NOT NULL,
+    secret_question VARCHAR(255),
+    secret_answer_hash VARCHAR(255) NOT NULL,
+    deleted_at TIMESTAMP
+);
+
+-- Stations
+CREATE TABLE metro_stations (
+    station_id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    is_interchange_metro BOOLEAN,
+    is_interchange_national_rail BOOLEAN,
+    interchange_national_rail_station_id VARCHAR(20),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE metro_station_lines (
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    line VARCHAR(10),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_stations (
+    station_id VARCHAR(20) PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    is_interchange_national_rail BOOLEAN,
+    is_interchange_metro BOOLEAN,
+    interchange_metro_station_id VARCHAR(20),
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_station_lines (
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    line VARCHAR(10),
+    deleted_at TIMESTAMP
+);
+
+-- Schedules
+CREATE TABLE metro_schedules (
+    schedule_id VARCHAR(20) PRIMARY KEY,
+    line VARCHAR(10),
+    direction VARCHAR(20),
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    first_train_time TIME,
+    last_train_time TIME,
+    base_fare_usd NUMERIC(10,2),
+    per_stop_rate_usd NUMERIC(10,2),
+    frequency_min INTEGER,
+    stops_in_order JSONB,
+    travel_time_from_origin_min JSONB,
+    operates_on JSONB,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_schedules (
+    schedule_id VARCHAR(20) PRIMARY KEY,
+    line VARCHAR(10),
+    service_type VARCHAR(20),
+    direction VARCHAR(20),
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    first_train_time TIME,
+    last_train_time TIME,
+    frequency_min INTEGER,
+    stops_in_order JSONB,
+    passed_through_stations JSONB,
+    travel_time_from_origin_min JSONB,
+    fare_classes JSONB,
+    operates_on JSONB,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE national_rail_seat_layouts (
+    layout_id VARCHAR(20) PRIMARY KEY,
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
+    coaches JSONB,
+    deleted_at TIMESTAMP
+);
+
+-- Bookings, Trips, Payments, Feedback
+CREATE TABLE national_rail_bookings (
+    booking_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    travel_date DATE,
+    departure_time TIME,
+    ticket_type VARCHAR(20),
+    fare_class VARCHAR(20),
+    coach VARCHAR(5),
+    seat_id VARCHAR(10),
+    stops_travelled INTEGER,
+    amount_usd NUMERIC(10,2),
+    status VARCHAR(20),
+    booked_at TIMESTAMP,
+    travelled_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE metro_trips (
+    trip_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id),
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    travel_date DATE,
+    ticket_type VARCHAR(20),
+    day_pass_ref VARCHAR(20),
+    stops_travelled INTEGER,
+    amount_usd NUMERIC(10,2),
+    status VARCHAR(20),
+    purchased_at TIMESTAMP,
+    travelled_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE payments (
+    payment_id VARCHAR(20) PRIMARY KEY,
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    amount_usd NUMERIC(10,2),
+    method VARCHAR(50),
+    status VARCHAR(20),
+    paid_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
+
+CREATE TABLE feedback (
+    feedback_id VARCHAR(20) PRIMARY KEY,
+    user_id VARCHAR(20) REFERENCES users(user_id),
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    rating INTEGER,
+    comment TEXT,
+    submitted_at TIMESTAMP,
+    deleted_at TIMESTAMP
+);
 ```
 
 ## Agreed Graph Schema
 
-<!-- ============================================================
-  FILL THIS IN after your team agrees on Neo4j node labels and
-  relationship types.
-  ============================================================ -->
-
-```
 Node labels:
-- TODO
+- `Station` (Generic label for all stations)
+- `MetroStation` (Specific label for metro stations)
+- `NationalRailStation` (Specific label for national rail stations)
 
 Relationship types:
-- TODO
+- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`)
+- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`)
+- `[:INTERCHANGE_WITH]` (Properties: `transfer_time_min` e.g. 5)
 
 Key properties:
-- TODO
-```
+- Node: `station_id` (Unique constraint), `name`
+- Edge: `travel_time_min` or `transfer_time_min` (Used as weights for shortest path routing)
 
 ## Function Signatures We Are Implementing
 
@@ -116,9 +270,17 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 
 <!-- Add entries as you make decisions. Format: "Decision: X. Why: Y." -->
 
-- [ ] Schema design: TODO — add your table/column decisions here
-- [ ] Graph schema: TODO — add your node label and relationship type decisions here
-- [ ] (example) Metro schedule stop ordering: using `jsonb_array_elements` approach — easier to debug than containment operators
+- [x] Schema design:
+  - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
+  - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
+  - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
+  - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
+  - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
+  - **Decision:** Use `JSONB` for `stops_in_order`, `travel_time_from_origin_min`, `operates_on`, `coaches`. **Why:** Easier to query order using `jsonb_array_elements_text WITH ORDINALITY`, reducing join overhead.
+  - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
+- [x] Graph schema:
+  - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
+  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
 
 ## Prompts That Worked
 
@@ -150,7 +312,7 @@ TODO — add after implementing your first function
 - **獨立資料表**：密碼嚴禁存放在 `user` 資料表中，必須抽離至獨立資料表（如 `user_credentials`）。
   - **欄位規範**：包含 `c_id` (Surrogate Key / 代理鍵)、`u_id` (Foreign Key / 外鍵)、hash、salt。
   - **權限控管**：必須對此表設定嚴格的存取權限，亦可考慮獨立存放在另一個 Schema。
-- **Salt 生成**：必須使用 **CSPRNG** 生成，並於資料庫中設定妥當的字元長度。
+- **Salt 生成**：可用 **CSPRNG** 生成，並於資料庫中設定妥當的字元長度。
 - **驗證位置**：Hash 比對與驗證可在 Web Server 端或資料庫端執行。
 - **帳號救援**：必須實作設定「秘密問題 (Secret Question)」與答案的比對機制。
 
