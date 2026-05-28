@@ -9,46 +9,31 @@
 
 -- ============================================================
 --  STUDENT TASK — Design and create your relational tables here
---
---  Start from the mock data in train-mock-data/:
---    metro_stations.json, national_rail_stations.json
---    metro_schedules.json, national_rail_schedules.json
---    national_rail_seat_layouts.json
---    registered_users.json
---    bookings.json, metro_travel_history.json
---    payments.json, feedback.json
---
---  Think about:
---    - What tables do you need?
---    - What columns and data types?
---    - Which fields are primary keys? Which are foreign keys?
---    - What constraints make sense?
---
---  Apply your schema with:
---    docker-compose down -v && docker-compose up -d
 -- ============================================================
-
 
 -- Users and Credentials
 CREATE TABLE users (
+    -- PK choice: We use Natural Keys (VARCHAR) derived from the dataset for primary entities to simplify data seeding and lookup.
     user_id VARCHAR(20) PRIMARY KEY,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
     date_of_birth DATE,
-    registered_at TIMESTAMP,
+    registered_at TIMESTAMPTZ,
     is_active BOOLEAN,
-    deleted_at TIMESTAMP
+    -- Delete strategy: We use Soft Delete (deleted_at TIMESTAMPTZ) to preserve historical integrity, particularly for bookings and financial records, complying with standard business rules.
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE user_credentials (
+    -- PK choice: Surrogate SERIAL key used for credentials table as it represents an internal system record mapped to a user.
     c_id SERIAL PRIMARY KEY,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     password_hash VARCHAR(255) NOT NULL,
     secret_question VARCHAR(255),
     secret_answer_hash VARCHAR(255) NOT NULL,
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
 );
 
 -- Stations
@@ -58,14 +43,15 @@ CREATE TABLE metro_stations (
     is_interchange_metro BOOLEAN,
     is_interchange_national_rail BOOLEAN,
     interchange_national_rail_station_id VARCHAR(20),
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE metro_station_lines (
     id SERIAL PRIMARY KEY,
-    station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE CASCADE,
     line VARCHAR(10),
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ,
+    UNIQUE(station_id, line)
 );
 
 CREATE TABLE national_rail_stations (
@@ -74,14 +60,15 @@ CREATE TABLE national_rail_stations (
     is_interchange_national_rail BOOLEAN,
     is_interchange_metro BOOLEAN,
     interchange_metro_station_id VARCHAR(20),
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE national_rail_station_lines (
     id SERIAL PRIMARY KEY,
-    station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE CASCADE,
     line VARCHAR(10),
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ,
+    UNIQUE(station_id, line)
 );
 
 -- Schedules
@@ -89,17 +76,25 @@ CREATE TABLE metro_schedules (
     schedule_id VARCHAR(20) PRIMARY KEY,
     line VARCHAR(10),
     direction VARCHAR(20),
-    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
-    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
     first_train_time TIME,
     last_train_time TIME,
     base_fare_usd NUMERIC(10,2),
     per_stop_rate_usd NUMERIC(10,2),
     frequency_min INTEGER,
-    stops_in_order JSONB,
-    travel_time_from_origin_min JSONB,
     operates_on JSONB,
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE TABLE metro_schedule_stops (
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id) ON DELETE CASCADE,
+    station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    stop_order INTEGER NOT NULL,
+    travel_time_from_origin_min INTEGER NOT NULL,
+    deleted_at TIMESTAMPTZ,
+    UNIQUE(schedule_id, station_id)
 );
 
 CREATE TABLE national_rail_schedules (
@@ -107,33 +102,41 @@ CREATE TABLE national_rail_schedules (
     line VARCHAR(10),
     service_type VARCHAR(20),
     direction VARCHAR(20),
-    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
-    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
     first_train_time TIME,
     last_train_time TIME,
     frequency_min INTEGER,
-    stops_in_order JSONB,
     passed_through_stations JSONB,
-    travel_time_from_origin_min JSONB,
     fare_classes JSONB,
     operates_on JSONB,
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
+);
+
+CREATE TABLE national_rail_schedule_stops (
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
+    station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    stop_order INTEGER NOT NULL,
+    travel_time_from_origin_min INTEGER NOT NULL,
+    deleted_at TIMESTAMPTZ,
+    UNIQUE(schedule_id, station_id)
 );
 
 CREATE TABLE national_rail_seat_layouts (
     layout_id VARCHAR(20) PRIMARY KEY,
-    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
     coaches JSONB,
-    deleted_at TIMESTAMP
+    deleted_at TIMESTAMPTZ
 );
 
 -- Bookings, Trips, Payments, Feedback
 CREATE TABLE national_rail_bookings (
     booking_id VARCHAR(20) PRIMARY KEY,
-    user_id VARCHAR(20) REFERENCES users(user_id),
-    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id),
-    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
-    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id),
+    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE RESTRICT,
+    origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
     travel_date DATE,
     departure_time TIME,
     ticket_type VARCHAR(20),
@@ -143,48 +146,48 @@ CREATE TABLE national_rail_bookings (
     stops_travelled INTEGER,
     amount_usd NUMERIC(10,2),
     status VARCHAR(20),
-    booked_at TIMESTAMP,
-    travelled_at TIMESTAMP,
-    deleted_at TIMESTAMP
+    booked_at TIMESTAMPTZ,
+    travelled_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE metro_trips (
     trip_id VARCHAR(20) PRIMARY KEY,
-    user_id VARCHAR(20) REFERENCES users(user_id),
-    schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id),
-    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
-    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id),
+    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id) ON DELETE RESTRICT,
+    origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
+    destination_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
     travel_date DATE,
     ticket_type VARCHAR(20),
     day_pass_ref VARCHAR(20),
     stops_travelled INTEGER,
     amount_usd NUMERIC(10,2),
     status VARCHAR(20),
-    purchased_at TIMESTAMP,
-    travelled_at TIMESTAMP,
-    deleted_at TIMESTAMP
+    purchased_at TIMESTAMPTZ,
+    travelled_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE payments (
     payment_id VARCHAR(20) PRIMARY KEY,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     amount_usd NUMERIC(10,2),
     method VARCHAR(50),
     status VARCHAR(20),
-    paid_at TIMESTAMP,
-    deleted_at TIMESTAMP
+    paid_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ
 );
 
 CREATE TABLE feedback (
     feedback_id VARCHAR(20) PRIMARY KEY,
-    user_id VARCHAR(20) REFERENCES users(user_id),
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id),
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id),
+    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     rating INTEGER,
     comment TEXT,
-    submitted_at TIMESTAMP,
-    deleted_at TIMESTAMP
+    submitted_at TIMESTAMPTZ,
+    deleted_at TIMESTAMPTZ
 );
 
 -- ============================================================
