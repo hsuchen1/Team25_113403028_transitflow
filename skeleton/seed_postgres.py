@@ -57,19 +57,22 @@ def insert_many(cur, table, columns, rows):
 
 def seed_metro_stations(cur):
     """
-    將捷運站基本資料寫入 metro_stations。
+    Inserts core metro station records into metro_stations.
 
-    設計決策：
-    - `lines` 欄位不在此處處理，改由 seed_metro_station_lines() 寫入獨立的
-      junction table。原因：一個站可能橫跨多條線，若存成陣列則無法走 B-tree
-      index，正規化後才能以 WHERE line = ? 有效查詢。
-    - `adjacent_stations` 屬於圖關係（邊、距離、方向），存在 Neo4j 管理，
-      不重複放入關聯式資料庫，避免雙重維護造成不一致。
-    - `interchange_metro_lines` 為冗餘欄位：is_interchange_metro 布林旗標
-      已足夠判斷是否為轉乘站，實際線別可從 metro_station_lines JOIN 取得，
-      多存一次反而增加資料同步的負擔。
-    - interchange_national_rail_station_id 以 .get() 取值，因為大多數捷運站
-      無對應國鐵站，允許 NULL 比用空字串更語意清晰且符合 SQL 慣例。
+    Design decisions:
+    - `lines` is intentionally omitted here and handled by seed_metro_station_lines()
+      in a separate junction table. A station can belong to multiple lines; storing
+      them as an array prevents B-tree indexing, whereas a junction table allows
+      efficient WHERE line = ? queries.
+    - `adjacent_stations` represents a graph relationship (edges with distance and
+      direction) and is managed entirely by Neo4j. Duplicating it in the relational
+      database would create a dual-maintenance burden and risk inconsistency.
+    - `interchange_metro_lines` is redundant: the is_interchange_metro boolean flag
+      is sufficient to identify interchange stations, and the actual lines can be
+      retrieved via a JOIN on metro_station_lines.
+    - interchange_national_rail_station_id uses .get() because most metro stations
+      have no corresponding national rail station; NULL is more semantically correct
+      than an empty string for a missing foreign key.
     """
     data = load("metro_stations.json")
     rows = []
@@ -79,7 +82,7 @@ def seed_metro_stations(cur):
             station["name"],
             station["is_interchange_metro"],
             station["is_interchange_national_rail"],
-            station.get("interchange_national_rail_station_id"),  # nullable：非所有站都有對應國鐵站
+            station.get("interchange_national_rail_station_id"),  # nullable: not all metro stations link to a national rail station
         ))
 
     n = insert_many(cur, "metro_stations",
@@ -92,14 +95,16 @@ def seed_metro_stations(cur):
 
 def seed_metro_station_lines(cur):
     """
-    將捷運站與路線的對應關係寫入 metro_station_lines（junction table）。
+    Inserts metro station-to-line mappings into metro_station_lines (junction table).
 
-    設計決策：
-    - 刻意將線別拆出來成獨立表，而非在 metro_stations 用陣列欄位儲存，
-      目的是讓 WHERE line = 'M1' 能走 index，並支援未來新增線別時
-      只需 INSERT 新列，不需 UPDATE 原站資料（符合 Open/Closed 原則）。
-    - 資料來源與 seed_metro_stations() 共用同一個 JSON 檔（metro_stations.json），
-      但刻意拆成兩個函式，確保每個函式只負責一張表，方便單獨重跑除錯。
+    Design decisions:
+    - Lines are stored in a separate table rather than an array column on
+      metro_stations so that WHERE line = 'M1' can use an index. It also means
+      adding a new line only requires an INSERT, not an UPDATE on the station row
+      (Open/Closed principle).
+    - Although this function reads the same JSON as seed_metro_stations(), they are
+      kept as two separate functions so that each is responsible for exactly one
+      table and can be re-run or debugged independently.
     """
     data = load("metro_stations.json")
     rows = []
@@ -117,48 +122,105 @@ def seed_metro_station_lines(cur):
 
 
 def seed_national_rail_stations(cur):
+    """
+    Inserts core national rail station records into national_rail_stations.
+
+    Design decisions:
+    - `lines` is delegated to seed_national_rail_station_lines() for the same
+      reason as the metro equivalent: normalization enables indexed line queries
+      and makes adding new lines a pure INSERT operation.
+    - `adjacent_stations` is a graph relationship managed by Neo4j; it is not
+      stored in the relational database.
+    - `interchange_national_rail_lines` is redundant given the
+      is_interchange_national_rail boolean flag; actual lines can be obtained
+      via a JOIN on national_rail_station_lines.
+    - interchange_metro_station_id uses .get() because not every national rail
+      station has a corresponding metro station; the column is nullable.
+    """
     data = load("national_rail_stations.json")
-    # TODO: 尚未實作 — 等待 schema 確認後補齊
-    raise NotImplementedError("seed_national_rail_stations: schema 尚未定案，請完成 schema.sql 後實作")
+    rows = []
+    for station in data:
+        rows.append((
+            station["station_id"],
+            station["name"],
+            station["is_interchange_national_rail"],
+            station["is_interchange_metro"],
+            station.get("interchange_metro_station_id"),  # nullable
+        ))
+
+    n = insert_many(cur, "national_rail_stations",
+                    ["station_id", "name", "is_interchange_national_rail",
+                     "is_interchange_metro", "interchange_metro_station_id"],
+                    rows)
+    print(f"  national_rail_stations: {n} rows")
+
+
+def seed_national_rail_station_lines(cur):
+    """
+    Inserts national rail station-to-line mappings into national_rail_station_lines
+    (junction table).
+
+    Design decisions:
+    - Follows the same pattern as seed_metro_station_lines(): lines live in their
+      own table to support indexed lookups and schema-friendly extensibility.
+    - Kept as a separate function from seed_national_rail_stations() so that each
+      function owns exactly one table and can be run or tested in isolation.
+      Both functions load the same JSON file independently to avoid coupling.
+    """
+    data = load("national_rail_stations.json")
+    rows = []
+    for station in data:
+        for line in station["lines"]:
+            rows.append((
+                station["station_id"],
+                line,
+            ))
+
+    n = insert_many(cur, "national_rail_station_lines",
+                    ["station_id", "line"],
+                    rows)
+    print(f"  national_rail_station_lines: {n} rows")
 
 
 def seed_metro_schedules(cur):
     data = load("metro_schedules.json")
-    # TODO: 尚未實作 — 需配合 metro_schedule_stops junction table 一起寫
-    raise NotImplementedError("seed_metro_schedules: 須與 seed_metro_schedule_stops() 一起實作")
+    # TODO: not yet implemented — must be written together with seed_metro_schedule_stops()
+    raise NotImplementedError("seed_metro_schedules: implement alongside seed_metro_schedule_stops()")
 
 
 def seed_national_rail_schedules(cur):
     data = load("national_rail_schedules.json")
-    # TODO: 尚未實作 — 需配合 national_rail_schedule_stops junction table 一起寫
-    raise NotImplementedError("seed_national_rail_schedules: 須與 seed_national_rail_schedule_stops() 一起實作")
+    # TODO: not yet implemented — must be written together with seed_national_rail_schedule_stops()
+    raise NotImplementedError("seed_national_rail_schedules: implement alongside seed_national_rail_schedule_stops()")
 
 
 def seed_seat_layouts(cur):
     data = load("national_rail_seat_layouts.json")
-    # TODO: 尚未實作
-    raise NotImplementedError("seed_seat_layouts: 尚未實作")
+    # TODO: not yet implemented
+    raise NotImplementedError("seed_seat_layouts: not yet implemented")
 
 
 def seed_users(cur):
     """
-    將使用者基本資料寫入 users 表。密碼與安全問答不在此處處理，
-    由 seed_user_credentials() 單獨負責，遵循最小權限原則：
-    查詢使用者基本資料的 query 不應接觸到任何憑證欄位。
+    Inserts user profile records into the users table. Passwords and security
+    answers are intentionally excluded here and handled exclusively by
+    seed_user_credentials(), following the principle of least privilege:
+    queries that only need profile data should never touch credential columns.
 
-    設計決策：
-    - JSON 來源的 `full_name` 是單一字串，但 schema 刻意拆成 first_name /
-      last_name，方便前端分別顯示姓氏、依姓排序，以及未來多語系格式化。
-      此處以第一個空格為分隔點做 split，符合英文姓名的常見格式。
-    - phone 以 .get() 取值，因為並非所有使用者都有提供手機號碼，
-      允許 NULL 比空字串更符合「未填寫」的語意。
-    - 密碼欄位（password）完全不接觸，確保明文密碼不會出現在
-      users 表或任何非憑證相關的程式路徑中。
+    Design decisions:
+    - The source JSON provides full_name as a single string, but the schema
+      stores first_name and last_name separately to allow per-field display,
+      sorting by surname, and future locale-aware formatting. The split is done
+      on the first space only (maxsplit=1) to avoid truncating middle names.
+    - phone uses .get() because not all users provide a phone number; NULL is
+      semantically cleaner than an empty string for a missing optional field.
+    - The password field in the JSON is never read here, ensuring plaintext
+      credentials do not appear in any non-credential code path.
     """
     data = load("registered_users.json")
     rows = []
     for user in data:
-        # JSON 的 full_name 拆成 first / last，最多切一刀避免中間名被截斷
+        # Split full_name into first / last with maxsplit=1 to preserve middle names
         parts = user["full_name"].split(" ", 1)
         first_name = parts[0]
         last_name = parts[1] if len(parts) > 1 else ""
@@ -168,7 +230,7 @@ def seed_users(cur):
             first_name,
             last_name,
             user["email"],
-            user.get("phone"),       # nullable：並非所有用戶都填寫電話
+            user.get("phone"),       # nullable: phone number is optional
             user["date_of_birth"],
             user["registered_at"],
             user["is_active"],
@@ -183,27 +245,30 @@ def seed_users(cur):
 
 def seed_user_credentials(cur):
     """
-    將使用者憑證（密碼雜湊、安全問答雜湊）寫入 user_credentials。
+    Inserts hashed passwords and security answer hashes into user_credentials.
 
-    設計決策：
-    - 使用 argon2id 演算法（由 PasswordHasher 預設提供），符合 OWASP 建議的
-      密碼儲存標準。argon2 的輸出字串已內嵌 salt、演算法版本與參數，
-      因此 schema 不需額外的 salt 欄位，簡化了表結構。
-    - JSON 中的 password 為明文（開發用模擬資料），在此處雜湊後才寫入資料庫，
-      確保資料庫內永遠不存在明文密碼。
-    - secret_answer 同樣以 argon2 雜湊儲存，且比對時區分大小寫，
-      這是系統刻意的設計：安全問答作為帳號恢復機制，要求使用者輸入與
-      註冊時完全一致的答案，降低暴力猜測的成功率。
-    - 此函式使用逐筆 cur.execute() 而非 execute_values() 批次插入，
-      原因是 argon2 雜湊計算必須在 Python 端逐筆進行，無法向量化；
-      若強行批次組裝 rows list，反而降低可讀性且無效能優勢。
+    Design decisions:
+    - argon2id (the default algorithm of PasswordHasher) is used per OWASP
+      password storage recommendations. argon2's output string embeds the salt,
+      algorithm version, and cost parameters, so no separate salt column is
+      needed in the schema.
+    - Passwords in the JSON are plaintext (development mock data only). Hashing
+      happens here at seed time so the database never contains plaintext credentials.
+    - secret_answer is also hashed with argon2 and compared case-sensitively.
+      This is an intentional security design: the security question serves as an
+      account recovery mechanism, and requiring an exact match reduces the risk
+      of brute-force guessing.
+    - This function uses per-row cur.execute() rather than execute_values() because
+      argon2 hashing must be computed in Python for each user individually and
+      cannot be vectorized. Forcing a batch approach would add complexity with no
+      performance benefit.
     """
     data = load("registered_users.json")
     ph = PasswordHasher()
 
     for user in data:
-        # 每筆都重新計算雜湊：argon2 每次呼叫產生不同 salt，確保相同密碼
-        # 不會產生相同的 hash，防止 rainbow table 攻擊
+        # argon2 generates a fresh random salt on every call, so identical
+        # passwords produce different hashes — this defeats rainbow table attacks
         password_hash = ph.hash(user["password"])
         secret_answer_hash = ph.hash(user["secret_answer"])
 
@@ -227,26 +292,26 @@ def seed_user_credentials(cur):
 
 def seed_national_rail_bookings(cur):
     data = load("bookings.json")
-    # TODO: 尚未實作
-    raise NotImplementedError("seed_national_rail_bookings: 尚未實作")
+    # TODO: not yet implemented
+    raise NotImplementedError("seed_national_rail_bookings: not yet implemented")
 
 
 def seed_metro_travels(cur):
     data = load("metro_travel_history.json")
-    # TODO: 尚未實作
-    raise NotImplementedError("seed_metro_travels: 尚未實作")
+    # TODO: not yet implemented
+    raise NotImplementedError("seed_metro_travels: not yet implemented")
 
 
 def seed_payments(cur):
     data = load("payments.json")
-    # TODO: 尚未實作
-    raise NotImplementedError("seed_payments: 尚未實作")
+    # TODO: not yet implemented
+    raise NotImplementedError("seed_payments: not yet implemented")
 
 
 def seed_feedback(cur):
     data = load("feedback.json")
-    # TODO: 尚未實作
-    raise NotImplementedError("seed_feedback: 尚未實作")
+    # TODO: not yet implemented
+    raise NotImplementedError("seed_feedback: not yet implemented")
 
 
 # ── main ─────────────────────────────────────────────────────────────────────
@@ -262,6 +327,7 @@ def main():
         seed_metro_stations(cur)
         seed_metro_station_lines(cur)
         seed_national_rail_stations(cur)
+        seed_national_rail_station_lines(cur)
         seed_metro_schedules(cur)
         seed_national_rail_schedules(cur)
         seed_seat_layouts(cur)
