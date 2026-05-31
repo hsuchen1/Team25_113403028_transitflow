@@ -410,6 +410,8 @@ def seed_user_credentials(cur):
       This is an intentional security design: the security question serves as an
       account recovery mechanism, and requiring an exact match reduces the risk
       of brute-force guessing.
+    - user_credentials.user_id has a UNIQUE constraint, so ON CONFLICT (user_id)
+      makes the seeder idempotent while keeping c_id as the internal surrogate key.
     - This function uses per-row cur.execute() rather than execute_values() because
       argon2 hashing must be computed in Python for each user individually and
       cannot be vectorized. Forcing a batch approach would add complexity with no
@@ -417,6 +419,7 @@ def seed_user_credentials(cur):
     """
     data = load("registered_users.json")
     ph = PasswordHasher()
+    inserted = 0
 
     for user in data:
         # argon2 generates a fresh random salt on every call, so identical
@@ -429,7 +432,7 @@ def seed_user_credentials(cur):
             INSERT INTO user_credentials
                 (user_id, password_hash, secret_question, secret_answer_hash)
             VALUES (%s, %s, %s, %s)
-            ON CONFLICT DO NOTHING
+            ON CONFLICT (user_id) DO NOTHING
             """,
             (
                 user["user_id"],
@@ -438,8 +441,9 @@ def seed_user_credentials(cur):
                 secret_answer_hash,
             )
         )
+        inserted += cur.rowcount
 
-    print(f"  user_credentials: {len(data)} rows")
+    print(f"  user_credentials: {inserted} rows")
 
 
 def seed_national_rail_bookings(cur):

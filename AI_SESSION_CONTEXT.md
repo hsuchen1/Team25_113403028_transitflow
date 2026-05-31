@@ -70,7 +70,7 @@ CREATE TABLE users (
 CREATE TABLE user_credentials (
     -- PK choice: Surrogate SERIAL key used for credentials table as it represents an internal system record mapped to a user.
     c_id SERIAL PRIMARY KEY,
-    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id VARCHAR(20) UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     password_hash VARCHAR(255) NOT NULL,
     secret_question VARCHAR(255),
     secret_answer_hash VARCHAR(255) NOT NULL,
@@ -296,9 +296,10 @@ def query_station_connections(station_id: str) -> list[dict]: ...
   - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
   - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
-  - **Decision:** `user_credentials` table decoupled from `users`. **Why:** Better security isolation, compliant with rules.
+  - **Decision:** `user_credentials` table decoupled from `users` with `UNIQUE(user_id)`. **Why:** Better security isolation, compliant with rules, and enforces one credential record per user so credential seeding is idempotent.
   - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
-  - **Decision:** Normalized `stops_in_order` and `travel_time_from_origin_min` into junction tables (`metro_schedule_stops`, `national_rail_schedule_stops`). **Why:** Strict adherence to grading criteria normalization requirements. `JSONB` is only kept for `operates_on` and `coaches`.
+  - **Decision:** Normalized `stops_in_order` and `travel_time_from_origin_min` into junction tables (`metro_schedule_stops`, `national_rail_schedule_stops`). **Why:** Strict adherence to grading criteria normalization requirements and direct support for route-order queries. `JSONB` is kept only for small schedule-attached or document-like structures that are not queried as independent entities, including `operates_on`, `fare_classes`, `passed_through_stations`, and `coaches`.
+  - **Decision:** Seed normal national rail services with `passed_through_stations = []` instead of `NULL`. **Why:** In the mock data, the missing field means there are no skipped stations, not that the value is unknown; storing an empty JSON array keeps the column consistently queryable as JSONB.
   - **Decision:** Use `TIMESTAMPTZ` for all datetimes. **Why:** Required by grading criteria.
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.

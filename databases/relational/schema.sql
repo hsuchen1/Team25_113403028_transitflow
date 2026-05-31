@@ -29,7 +29,7 @@ CREATE TABLE users (
 CREATE TABLE user_credentials (
     -- PK choice: Surrogate SERIAL key used for credentials table as it represents an internal system record mapped to a user.
     c_id SERIAL PRIMARY KEY,
-    user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
+    user_id VARCHAR(20) UNIQUE REFERENCES users(user_id) ON DELETE CASCADE,
     password_hash VARCHAR(255) NOT NULL,
     secret_question VARCHAR(255),
     secret_answer_hash VARCHAR(255) NOT NULL,

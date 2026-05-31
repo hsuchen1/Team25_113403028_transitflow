@@ -5,6 +5,8 @@ It does not modify the shared context file directly.
 
 ## 1. Clarify JSONB Decision for Relational Schema
 
+Status: Applied to `AI_SESSION_CONTEXT.md`.
+
 Current decision log says:
 
 > Normalized `stops_in_order` and `travel_time_from_origin_min` into junction tables (`metro_schedule_stops`, `national_rail_schedule_stops`). Why: Strict adherence to grading criteria normalization requirements. `JSONB` is only kept for `operates_on` and `coaches`.
@@ -22,6 +24,8 @@ Reason:
 
 ## 2. Clarify National Rail Schedule Seeding Convention
 
+Status: Applied to `AI_SESSION_CONTEXT.md`.
+
 Recommended addition to the team decisions or implementation notes:
 
 > For normal national rail services, `passed_through_stations` is seeded as an empty JSON array (`[]`) instead of `NULL`. Why: in the mock data, the missing field means there are no skipped stations, not that the value is unknown. This keeps the column consistently usable as a JSON array.
@@ -33,6 +37,8 @@ Reason:
 - It avoids future query/debug logic needing to handle both `NULL` and JSON arrays.
 
 ## 3. Fix Graph Relationship Naming Inconsistency
+
+Status: Pending. Not changed because graph-related files and graph decisions are outside the current relational task scope.
 
 Current graph schema section says:
 
