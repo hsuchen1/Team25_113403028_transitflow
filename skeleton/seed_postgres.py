@@ -14,7 +14,7 @@ import os
 import sys
 
 import psycopg2
-from psycopg2.extras import execute_values
+from psycopg2.extras import Json, execute_values
 from argon2 import PasswordHasher
 
 # ── resolve paths ────────────────────────────────────────────────────────────
@@ -183,15 +183,167 @@ def seed_national_rail_station_lines(cur):
 
 
 def seed_metro_schedules(cur):
+    """
+    Inserts metro schedule header records into metro_schedules.
+
+    Design decisions:
+    - Stop order and travel-time offsets are deliberately excluded from this
+      table and loaded by seed_metro_schedule_stops(). Keeping one row per
+      schedule here and one row per stop in the junction table satisfies the
+      normalization requirement while still preserving the original route order.
+    - operates_on is stored as JSONB because it is a small fixed list attached
+      to one schedule; the application does not need to join or filter it as a
+      separate entity in the current requirements.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("metro_schedules.json")
-    # TODO: not yet implemented — must be written together with seed_metro_schedule_stops()
-    raise NotImplementedError("seed_metro_schedules: implement alongside seed_metro_schedule_stops()")
+    rows = []
+    for schedule in data:
+        rows.append((
+            schedule["schedule_id"],
+            schedule["line"],
+            schedule["direction"],
+            schedule["origin_station_id"],
+            schedule["destination_station_id"],
+            schedule["first_train_time"],
+            schedule["last_train_time"],
+            schedule["base_fare_usd"],
+            schedule["per_stop_rate_usd"],
+            schedule["frequency_min"],
+            Json(schedule["operates_on"]),
+        ))
+
+    n = insert_many(cur, "metro_schedules",
+                    ["schedule_id", "line", "direction", "origin_station_id",
+                     "destination_station_id", "first_train_time",
+                     "last_train_time", "base_fare_usd", "per_stop_rate_usd",
+                     "frequency_min", "operates_on"],
+                    rows)
+    print(f"  metro_schedules: {n} rows")
+
+
+def seed_metro_schedule_stops(cur):
+    """
+    Inserts one metro_schedule_stops row per station stop in each metro schedule.
+
+    Design decisions:
+    - stop_order is generated with a 1-based sequence so SQL queries can compare
+      origin and destination positions directly (origin.stop_order < destination.stop_order).
+    - travel_time_from_origin_min is copied from the source map for each station
+      to avoid parsing JSON during availability queries.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
+    data = load("metro_schedules.json")
+    rows = []
+    for schedule in data:
+        travel_times = schedule["travel_time_from_origin_min"]
+        for stop_order, station_id in enumerate(schedule["stops_in_order"], start=1):
+            rows.append((
+                schedule["schedule_id"],
+                station_id,
+                stop_order,
+                travel_times[station_id],
+            ))
+
+    n = insert_many(cur, "metro_schedule_stops",
+                    ["schedule_id", "station_id", "stop_order",
+                     "travel_time_from_origin_min"],
+                    rows)
+    print(f"  metro_schedule_stops: {n} rows")
 
 
 def seed_national_rail_schedules(cur):
+    """
+    Inserts national rail schedule header records into national_rail_schedules.
+
+    Design decisions:
+    - fare_classes remains JSONB because fare lookup is schedule-scoped: the
+      query knows schedule_id and fare_class, then extracts that small nested
+      object directly from the selected schedule row.
+    - passed_through_stations is stored as an empty JSON array for normal
+      services rather than NULL. In this dataset, missing means "no skipped
+      stations", not "unknown".
+    - Actual stopping sequence is loaded separately by
+      seed_national_rail_schedule_stops() so route-order queries do not need to
+      inspect JSON arrays.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("national_rail_schedules.json")
-    # TODO: not yet implemented — must be written together with seed_national_rail_schedule_stops()
-    raise NotImplementedError("seed_national_rail_schedules: implement alongside seed_national_rail_schedule_stops()")
+    rows = []
+    for schedule in data:
+        rows.append((
+            schedule["schedule_id"],
+            schedule["line"],
+            schedule["service_type"],
+            schedule["direction"],
+            schedule["origin_station_id"],
+            schedule["destination_station_id"],
+            schedule["first_train_time"],
+            schedule["last_train_time"],
+            schedule["frequency_min"],
+            Json(schedule.get("passed_through_stations", [])),
+            Json(schedule["fare_classes"]),
+            Json(schedule["operates_on"]),
+        ))
+
+    n = insert_many(cur, "national_rail_schedules",
+                    ["schedule_id", "line", "service_type", "direction",
+                     "origin_station_id", "destination_station_id",
+                     "first_train_time", "last_train_time", "frequency_min",
+                     "passed_through_stations", "fare_classes", "operates_on"],
+                    rows)
+    print(f"  national_rail_schedules: {n} rows")
+
+
+def seed_national_rail_schedule_stops(cur):
+    """
+    Inserts one national_rail_schedule_stops row per stopping station.
+
+    Design decisions:
+    - Only stations in stops_in_order are inserted here. Express-only
+      passed_through_stations are not stops and must not be returned as
+      boardable stations by availability queries.
+    - The normalized stop_order column is the source of truth for checking
+      whether a destination appears after an origin on the same service.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
+    data = load("national_rail_schedules.json")
+    rows = []
+    for schedule in data:
+        travel_times = schedule["travel_time_from_origin_min"]
+        for stop_order, station_id in enumerate(schedule["stops_in_order"], start=1):
+            rows.append((
+                schedule["schedule_id"],
+                station_id,
+                stop_order,
+                travel_times[station_id],
+            ))
+
+    n = insert_many(cur, "national_rail_schedule_stops",
+                    ["schedule_id", "station_id", "stop_order",
+                     "travel_time_from_origin_min"],
+                    rows)
+    print(f"  national_rail_schedule_stops: {n} rows")
 
 
 def seed_seat_layouts(cur):
@@ -329,7 +481,9 @@ def main():
         seed_national_rail_stations(cur)
         seed_national_rail_station_lines(cur)
         seed_metro_schedules(cur)
+        seed_metro_schedule_stops(cur)
         seed_national_rail_schedules(cur)
+        seed_national_rail_schedule_stops(cur)
         seed_seat_layouts(cur)
         seed_users(cur)
         seed_user_credentials(cur)
