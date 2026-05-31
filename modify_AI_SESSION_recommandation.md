@@ -24,17 +24,16 @@ Reason:
 
 ## 2. Clarify National Rail Schedule Seeding Convention
 
-Status: Applied to `AI_SESSION_CONTEXT.md`.
+Status: Revised. Team preference is to seed normal-service `passed_through_stations` as `NULL`.
 
 Recommended addition to the team decisions or implementation notes:
 
-> For normal national rail services, `passed_through_stations` is seeded as an empty JSON array (`[]`) instead of `NULL`. Why: in the mock data, the missing field means there are no skipped stations, not that the value is unknown. This keeps the column consistently usable as a JSON array.
+> For normal national rail services, `passed_through_stations` is seeded as `NULL`. Why: this field only applies to express services that pass through stations without stopping; for normal services it is not applicable.
 
 Reason:
 
 - Normal services do not have `passed_through_stations` in the source JSON.
-- Storing `[]` gives a clearer meaning: "no skipped stations".
-- It avoids future query/debug logic needing to handle both `NULL` and JSON arrays.
+- Storing `NULL` makes the distinction explicit: the concept is not applicable to normal stopping services.
 
 ## 3. Fix Graph Relationship Naming Inconsistency
 

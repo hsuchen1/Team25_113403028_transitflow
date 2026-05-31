@@ -270,9 +270,9 @@ def seed_national_rail_schedules(cur):
     - fare_classes remains JSONB because fare lookup is schedule-scoped: the
       query knows schedule_id and fare_class, then extracts that small nested
       object directly from the selected schedule row.
-    - passed_through_stations is stored as an empty JSON array for normal
-      services rather than NULL. In this dataset, missing means "no skipped
-      stations", not "unknown".
+    - passed_through_stations is stored as NULL for normal services because the
+      concept only applies to express services that pass through stations
+      without stopping.
     - Actual stopping sequence is loaded separately by
       seed_national_rail_schedule_stops() so route-order queries do not need to
       inspect JSON arrays.
@@ -296,7 +296,7 @@ def seed_national_rail_schedules(cur):
             schedule["first_train_time"],
             schedule["last_train_time"],
             schedule["frequency_min"],
-            Json(schedule.get("passed_through_stations", [])),
+            Json(schedule["passed_through_stations"]) if "passed_through_stations" in schedule else None,
             Json(schedule["fare_classes"]),
             Json(schedule["operates_on"]),
         ))
