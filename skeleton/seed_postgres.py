@@ -347,9 +347,40 @@ def seed_national_rail_schedule_stops(cur):
 
 
 def seed_seat_layouts(cur):
+    """
+    Inserts seat layout records into national_rail_seat_layouts.
+
+    Design decisions:
+    - coaches is stored as a single JSONB blob per layout because seat layout
+      is a document-like structure that is always retrieved and rendered as a
+      whole (e.g. seat picker UI). Normalizing coaches and seats into separate
+      tables would add JOIN overhead with no query benefit under current requirements.
+    - Only normal services (NR_SCH01–04) have seat layouts. Express services
+      (NR_SCH05–08) have no assigned seating and therefore have no layout record.
+      This is intentional and requires no special handling here.
+    - Json() wraps the coaches list so psycopg2 serializes it correctly as JSONB
+      via execute_values, consistent with the pattern used in seed_metro_schedules()
+      and seed_national_rail_schedules().
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("national_rail_seat_layouts.json")
-    # TODO: not yet implemented
-    raise NotImplementedError("seed_seat_layouts: not yet implemented")
+    rows = []
+    for layout in data:
+        rows.append((
+            layout["layout_id"],
+            layout["schedule_id"],
+            Json(layout["coaches"]),
+        ))
+
+    n = insert_many(cur, "national_rail_seat_layouts",
+                    ["layout_id", "schedule_id", "coaches"],
+                    rows)
+    print(f"  national_rail_seat_layouts: {n} rows")
 
 
 def seed_users(cur):
@@ -425,7 +456,7 @@ def seed_user_credentials(cur):
         # argon2 generates a fresh random salt on every call, so identical
         # passwords produce different hashes — this defeats rainbow table attacks
         password_hash = ph.hash(user["password"])
-        secret_answer_hash = ph.hash(user["secret_answer"])
+        secret_answer_hash = ph.hash(user["secret_answer"].lower())  # lowercase before hashing so verify_secret_answer can compare case-insensitively
 
         cur.execute(
             """
@@ -446,31 +477,186 @@ def seed_user_credentials(cur):
     print(f"  user_credentials: {inserted} rows")
 
 
+
 def seed_national_rail_bookings(cur):
+    """
+    Inserts national rail booking records into national_rail_bookings.
+
+    Design decisions:
+    - travelled_at uses .get() because bookings with status 'confirmed' or
+      'cancelled' have not yet been travelled; the column is nullable by design.
+    - All other fields map directly from the JSON; no transformation is needed.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("bookings.json")
-    # TODO: not yet implemented
-    raise NotImplementedError("seed_national_rail_bookings: not yet implemented")
+    rows = []
+    for booking in data:
+        rows.append((
+            booking["booking_id"],
+            booking["user_id"],
+            booking["schedule_id"],
+            booking["origin_station_id"],
+            booking["destination_station_id"],
+            booking["travel_date"],
+            booking["departure_time"],
+            booking["ticket_type"],
+            booking["fare_class"],
+            booking["coach"],
+            booking["seat_id"],
+            booking["stops_travelled"],
+            booking["amount_usd"],
+            booking["status"],
+            booking["booked_at"],
+            booking.get("travelled_at"),  # nullable: None for confirmed/cancelled bookings
+        ))
+
+    n = insert_many(cur, "national_rail_bookings",
+                    ["booking_id", "user_id", "schedule_id",
+                     "origin_station_id", "destination_station_id",
+                     "travel_date", "departure_time", "ticket_type",
+                     "fare_class", "coach", "seat_id", "stops_travelled",
+                     "amount_usd", "status", "booked_at", "travelled_at"],
+                    rows)
+    print(f"  national_rail_bookings: {n} rows")
 
 
 def seed_metro_travels(cur):
+    """
+    Inserts metro trip records into metro_trips.
+
+    Design decisions:
+    - day_pass_ref links additional trips taken under the same day pass purchase
+      to their originating trip (e.g. MT021/MT022 both reference MT002). It is
+      NULL for single tickets and for the initial day-pass purchase trip itself.
+    - stops_travelled is NULL for all day-pass trips because a day pass grants
+      unlimited travel; per-stop counting is not applicable.
+    - purchased_at is NULL for secondary day-pass trips (amount_usd = 0.0)
+      because no separate purchase event occurs — only the originating trip has
+      a purchase timestamp.
+    - travelled_at uses .get() because cancelled trips may not have a travel
+      timestamp.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("metro_travel_history.json")
-    # TODO: not yet implemented
-    raise NotImplementedError("seed_metro_travels: not yet implemented")
+    rows = []
+    for trip in data:
+        rows.append((
+            trip["trip_id"],
+            trip["user_id"],
+            trip["schedule_id"],
+            trip["origin_station_id"],
+            trip["destination_station_id"],
+            trip["travel_date"],
+            trip["ticket_type"],
+            trip.get("day_pass_ref"),       # nullable: None for single tickets and originating day-pass trips
+            trip.get("stops_travelled"),    # nullable: None for all day-pass trips
+            trip["amount_usd"],
+            trip["status"],
+            trip.get("purchased_at"),       # nullable: None for secondary day-pass trips
+            trip.get("travelled_at"),       # nullable: None for cancelled trips
+        ))
+
+    n = insert_many(cur, "metro_trips",
+                    ["trip_id", "user_id", "schedule_id",
+                     "origin_station_id", "destination_station_id",
+                     "travel_date", "ticket_type", "day_pass_ref",
+                     "stops_travelled", "amount_usd", "status",
+                     "purchased_at", "travelled_at"],
+                    rows)
+    print(f"  metro_trips: {n} rows")
 
 
 def seed_payments(cur):
+    """
+    Inserts payment records into payments.
+
+    Design decisions:
+    - payments.json uses a single booking_id field for both national rail bookings
+      (prefix 'BK') and metro trips (prefix 'MT'). The schema stores these as two
+      separate nullable FKs (national_rail_booking_id, metro_trip_id) to preserve
+      referential integrity per table. The prefix determines which FK is populated
+      and the other is set to NULL.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("payments.json")
-    # TODO: not yet implemented
-    raise NotImplementedError("seed_payments: not yet implemented")
+    rows = []
+    for payment in data:
+        booking_id = payment["booking_id"]
+        # Route the single booking_id to the correct FK based on its prefix
+        nr_id = booking_id if booking_id.startswith("BK") else None
+        mt_id = booking_id if booking_id.startswith("MT") else None
+        rows.append((
+            payment["payment_id"],
+            nr_id,
+            mt_id,
+            payment["amount_usd"],
+            payment["method"],
+            payment["status"],
+            payment["paid_at"],
+        ))
+
+    n = insert_many(cur, "payments",
+                    ["payment_id", "national_rail_booking_id", "metro_trip_id",
+                     "amount_usd", "method", "status", "paid_at"],
+                    rows)
+    print(f"  payments: {n} rows")
 
 
 def seed_feedback(cur):
+    """
+    Inserts feedback records into feedback.
+
+    Design decisions:
+    - feedback.json uses a single booking_id field for both national rail bookings
+      (prefix 'BK') and metro trips (prefix 'MT'). Same prefix-based routing as
+      seed_payments(): one FK is populated and the other is NULL.
+    - user_id is present directly in the JSON and maps to the feedback.user_id FK.
+
+    Args:
+        cur: Open psycopg2 cursor owned by main().
+
+    Returns:
+        None.
+    """
     data = load("feedback.json")
-    # TODO: not yet implemented
-    raise NotImplementedError("seed_feedback: not yet implemented")
+    rows = []
+    for fb in data:
+        booking_id = fb["booking_id"]
+        nr_id = booking_id if booking_id.startswith("BK") else None
+        mt_id = booking_id if booking_id.startswith("MT") else None
+        rows.append((
+            fb["feedback_id"],
+            fb["user_id"],
+            nr_id,
+            mt_id,
+            fb["rating"],
+            fb["comment"],
+            fb["submitted_at"],
+        ))
+
+    n = insert_many(cur, "feedback",
+                    ["feedback_id", "user_id", "national_rail_booking_id",
+                     "metro_trip_id", "rating", "comment", "submitted_at"],
+                    rows)
+    print(f"  feedback: {n} rows")
 
 
-# ── main ─────────────────────────────────────────────────────────────────────
+# ── main ────────────────────────────────────────────────────────────────────────────
 
 def main():
     print("Connecting to PostgreSQL...")
