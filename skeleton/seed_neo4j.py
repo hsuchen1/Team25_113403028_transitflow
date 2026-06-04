@@ -58,8 +58,7 @@ def seed():
     driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
     with driver.session() as session:
 
-        session.run("MATCH (n) DETACH DELETE n")
-        print("  Cleared existing graph data")
+        # We rely solely on MERGE for idempotency without wiping existing data.
 
         # Create MetroStation nodes (using MERGE for idempotency)
         for station in metro_stations:
