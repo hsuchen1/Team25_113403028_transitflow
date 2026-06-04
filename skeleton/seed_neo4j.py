@@ -198,6 +198,7 @@ def seed():
     print("   Open http://localhost:7475 to explore the graph.")
 
 
+
 if __name__ == "__main__":
     print("Connecting to Neo4j...")
     seed()
