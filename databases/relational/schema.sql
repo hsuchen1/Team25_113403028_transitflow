@@ -13,8 +13,11 @@
 
 -- Users and Credentials
 CREATE TABLE users (
-    -- PK choice: We use Natural Keys (VARCHAR) derived from the dataset for primary entities to simplify data seeding and lookup.
-    user_id VARCHAR(20) PRIMARY KEY,
+    -- PK choice: Surrogate SERIAL key for internal row identity; user_id is kept as UNIQUE NOT NULL
+    -- to preserve the natural identifier used across all FK references and application logic.
+    -- SERIAL was chosen over UUID v7 for simplicity and lower storage overhead (4 vs 16 bytes).
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(20) UNIQUE NOT NULL,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,

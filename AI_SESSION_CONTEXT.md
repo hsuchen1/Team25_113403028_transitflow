@@ -54,8 +54,11 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
 ```sql
 -- Users and Credentials
 CREATE TABLE users (
-    -- PK choice: We use Natural Keys (VARCHAR) derived from the dataset for primary entities to simplify data seeding and lookup.
-    user_id VARCHAR(20) PRIMARY KEY,
+    -- PK choice: Surrogate SERIAL key for internal row identity; user_id is kept as UNIQUE NOT NULL
+    -- to preserve the natural identifier used across all FK references and application logic.
+    -- SERIAL was chosen over UUID v7 for simplicity and lower storage overhead (4 vs 16 bytes).
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(20) UNIQUE NOT NULL,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
@@ -294,7 +297,8 @@ def query_station_connections(station_id: str) -> list[dict]: ...
 
 - [x] Schema design:
   - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
-  - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) as PKs everywhere except `user_credentials` (`c_id SERIAL PRIMARY KEY`). **Why:** Simplifies foreign key relations and data seeding, as unique IDs are provided.
+  - **Decision:** Added `id SERIAL PRIMARY KEY` to `users` table, while keeping `user_id` as `UNIQUE NOT NULL`. Chose Auto-Increment over UUID v7. **Why:** Auto-increment (`SERIAL`) was chosen over UUID v7 because it provides native, sequential ID generation without relying on external Python packages or PostgreSQL extensions (like `pg_uuidv7`). It also offers better index performance and lower storage overhead (4 bytes vs 16 bytes). Foreign keys continue to safely reference the unique `user_id`.
+  - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) are kept as PKs for transit entities like stations and schedules. **Why:** Simplifies foreign key relations and data seeding.
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
   - **Decision:** `user_credentials` table decoupled from `users` with `UNIQUE(user_id)`. **Why:** Better security isolation, compliant with rules, and enforces one credential record per user so credential seeding is idempotent.
   - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
