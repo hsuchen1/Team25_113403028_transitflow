@@ -44,6 +44,7 @@ from databases.relational.queries import (
     auto_select_adjacent_seats,
     query_user_profile,
     query_user_bookings,
+    query_payment_info,
     execute_booking,
     execute_cancellation,
     query_policy_vector_search,
@@ -54,6 +55,7 @@ from databases.graph.queries import (
     query_alternative_routes,
     query_interchange_path,
     query_delay_ripple,
+    query_station_connections,
 )
 
 
@@ -272,6 +274,22 @@ TOOLS = [
         },
         "required": ["station_id"],
     },
+    {
+        "name": "get_station_connections",
+        "description": "List all direct, immediate neighbours connected to a specific station.",
+        "parameters": {
+            "station_id": {"type": "string", "description": "Station ID e.g. MS01 or NR01"},
+        },
+        "required": ["station_id"],
+    },
+    {
+        "name": "get_payment_info",
+        "description": "Retrieve the payment record and status for a specific booking or trip.",
+        "parameters": {
+            "booking_id": {"type": "string", "description": "Booking or trip ID e.g. BK-A1B2C3"},
+        },
+        "required": ["booking_id"],
+    },
 ]
 
 TOOLS_SCHEMA = """\
@@ -286,7 +304,9 @@ cancel_booking(booking_id)
 get_user_bookings()
 search_policy(query)
 find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
-get_delay_ripple(station_id, hops?)"""
+get_delay_ripple(station_id, hops?)
+get_station_connections(station_id)
+get_payment_info(booking_id)"""
 
 
 # ── Agent logic ───────────────────────────────────────────────────────────────
@@ -435,6 +455,12 @@ def _execute_tool(
                 delayed_station_id=params["station_id"],
                 hops=params.get("hops", 2),
             )
+
+        elif tool_name == "get_station_connections":
+            result = query_station_connections(params["station_id"])
+
+        elif tool_name == "get_payment_info":
+            result = query_payment_info(params["booking_id"])
 
         else:
             result = {"error": f"Unknown tool: {tool_name}"}
