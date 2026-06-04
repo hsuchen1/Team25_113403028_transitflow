@@ -13,8 +13,8 @@
 
 -- Users and Credentials
 CREATE TABLE users (
-    -- PK choice: We use Natural Keys (VARCHAR) derived from the dataset for primary entities to simplify data seeding and lookup.
-    user_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(20) UNIQUE NOT NULL,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
