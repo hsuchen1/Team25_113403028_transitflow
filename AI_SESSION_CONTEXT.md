@@ -60,7 +60,7 @@ CREATE TABLE users (
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
-    date_of_birth DATE,
+    year_of_birth SMALLINT,
     registered_at TIMESTAMPTZ,
     is_active BOOLEAN,
     -- Delete strategy: We use Soft Delete (deleted_at TIMESTAMPTZ) to preserve historical integrity, particularly for bookings and financial records, complying with standard business rules.
@@ -303,6 +303,7 @@ def query_station_connections(station_id: str) -> list[dict]: ...
   - **Decision:** Use `TIMESTAMPTZ` for all datetimes. **Why:** Required by grading criteria.
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
+  - **Decision:** Changed `date_of_birth DATE` to `year_of_birth SMALLINT` in `users` table. **Why:** The registration form (`register_user`) only collects year of birth; storing a full DATE would require fabricating month/day, which is semantically incorrect. Seeding extracts the year from the mock data's full date string.
 - [x] Graph schema:
   - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
   - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.

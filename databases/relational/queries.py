@@ -183,8 +183,37 @@ def auto_select_adjacent_seats(available_seats: list[dict], count: int) -> list[
 # ── USER & BOOKING QUERIES ────────────────────────────────────────────────────
 
 def query_user_profile(user_email: str) -> Optional[dict]:
-    """Return a user's profile by email."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Return a user's profile by email.
+
+    Args:
+        user_email: The user's email address.
+
+    Returns:
+        dict with keys user_id, email, first_name, surname, full_name,
+        year_of_birth, phone, is_active, registered_at.
+        None if not found or account is inactive/deleted.
+    """
+    sql = """
+        SELECT
+            user_id,
+            email,
+            first_name,
+            last_name                              AS surname,
+            first_name || ' ' || last_name         AS full_name,
+            year_of_birth,
+            phone,
+            is_active,
+            registered_at
+        FROM users
+        WHERE email = %s
+          AND is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (user_email,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
 
 def query_user_bookings(user_email: str) -> dict:
@@ -276,25 +305,152 @@ def register_user(
 
 def login_user(email: str, password: str) -> Optional[dict]:
     """
-    Verify credentials. Returns a user dict on success or None on failure.
-    Dict keys: user_id, email, full_name, first_name, surname, phone, date_of_birth, is_active.
+    Verify credentials and return the user's profile on success.
+
+    Args:
+        email:    The user's email address.
+        password: The plaintext password to verify against the stored argon2 hash.
+
+    Returns:
+        dict with keys user_id, email, first_name, surname on success.
+        None if email not found, account is inactive, or password is incorrect.
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    sql = """
+        SELECT
+            u.user_id,
+            u.email,
+            u.first_name,
+            u.last_name  AS surname,
+            uc.password_hash
+        FROM users u
+        JOIN user_credentials uc ON uc.user_id = u.user_id
+        WHERE u.email = %s
+          AND u.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+
+    if row is None:
+        return None  # email not found or account inactive
+
+    from argon2 import PasswordHasher
+    from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+    ph = PasswordHasher()
+    try:
+        ph.verify(row["password_hash"], password)
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return None  # wrong password
+
+    return {
+        "user_id":    row["user_id"],
+        "email":      row["email"],
+        "first_name": row["first_name"],
+        "surname":    row["surname"],
+    }
 
 
 def get_user_secret_question(email: str) -> Optional[str]:
-    """Return the secret question for a registered email, or None if not found."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Return the secret question for a registered, active account.
+
+    Args:
+        email: The user's email address.
+
+    Returns:
+        The secret question string, or None if email not found or account inactive.
+    """
+    sql = """
+        SELECT uc.secret_question
+        FROM user_credentials uc
+        JOIN users u ON u.user_id = uc.user_id
+        WHERE u.email = %s
+          AND u.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+            return row["secret_question"] if row else None
 
 
 def verify_secret_answer(email: str, answer: str) -> bool:
-    """Return True if the provided answer matches the stored secret answer (case-insensitive)."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Verify the secret answer for a registered, active account (case-insensitive).
+
+    Args:
+        email:  The user's email address.
+        answer: The plaintext answer to verify (compared case-insensitively).
+
+    Returns:
+        True if the answer matches, False otherwise.
+    """
+    sql = """
+        SELECT uc.secret_answer_hash
+        FROM user_credentials uc
+        JOIN users u ON u.user_id = uc.user_id
+        WHERE u.email = %s
+          AND u.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (email,))
+            row = cur.fetchone()
+
+    if row is None:
+        return False
+
+    from argon2 import PasswordHasher
+    from argon2.exceptions import VerifyMismatchError, VerificationError, InvalidHashError
+    ph = PasswordHasher()
+    try:
+        ph.verify(row["secret_answer_hash"], answer.lower())  # seed hashed with .lower()
+        return True
+    except (VerifyMismatchError, VerificationError, InvalidHashError):
+        return False
 
 
 def update_password(email: str, new_password: str) -> bool:
-    """Update the password for a user. Returns True if the row was updated."""
-    raise NotImplementedError("TODO: implement after designing your schema")
+    """
+    Update the hashed password for an active account.
+    Caller is responsible for verifying identity before calling this function.
+
+    Args:
+        email:        The user's email address.
+        new_password: The new plaintext password to hash and store.
+
+    Returns:
+        True if the password was updated, False if email not found or account inactive.
+    """
+    # Fetch user_id first so we only UPDATE credentials for active accounts
+    sql_find = """
+        SELECT u.user_id
+        FROM users u
+        WHERE u.email = %s
+          AND u.is_active = TRUE
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql_find, (email,))
+            row = cur.fetchone()
+
+    if row is None:
+        return False
+
+    from argon2 import PasswordHasher
+    ph = PasswordHasher()
+    new_hash = ph.hash(new_password)
+
+    sql_update = """
+        UPDATE user_credentials
+        SET password_hash = %s
+        WHERE user_id = %s
+    """
+    with _connect() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql_update, (new_hash, row["user_id"]))
+            return cur.rowcount > 0
 
 
 # ── VECTOR / RAG QUERIES — do not modify ─────────────────────────────────────

@@ -19,7 +19,9 @@ CREATE TABLE users (
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
-    date_of_birth DATE,
+    -- year_of_birth: stored as SMALLINT because the registration form only collects year;
+    -- storing a full DATE would require fabricating month/day, which is semantically incorrect.
+    year_of_birth SMALLINT,
     registered_at TIMESTAMPTZ,
     is_active BOOLEAN,
     -- Delete strategy: We use Soft Delete (deleted_at TIMESTAMPTZ) to preserve historical integrity, particularly for bookings and financial records, complying with standard business rules.
