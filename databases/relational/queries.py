@@ -443,6 +443,57 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
             return dict(row) if row else None
 
 
+# ── DEPARTURE TIMES ──────────────────────────────────────────────────────────
+
+def query_departure_times(schedule_id: str) -> list[dict]:
+    """
+    Return all valid departure times for a national rail schedule.
+    Departure time is defined as the time the train departs from the schedule's
+    origin station (first stop). Times are generated from first_train_time to
+    last_train_time at frequency_min intervals.
+
+    Args:
+        schedule_id: e.g. "NR_SCH01"
+
+    Returns:
+        List of dicts with departure_time (HH:MM string) and schedule metadata.
+        Empty list if schedule not found.
+    """
+    from datetime import datetime, timedelta
+
+    sql = """
+        SELECT schedule_id, first_train_time, last_train_time, frequency_min,
+               line, service_type, direction
+        FROM national_rail_schedules
+        WHERE schedule_id = %s
+    """
+    with _connect() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (schedule_id,))
+            row = cur.fetchone()
+
+    if row is None:
+        return []
+
+    first = datetime.strptime(str(row["first_train_time"]), "%H:%M:%S")
+    last  = datetime.strptime(str(row["last_train_time"]),  "%H:%M:%S")
+    freq  = row["frequency_min"]
+
+    times = []
+    current = first
+    while current <= last:
+        times.append({
+            "departure_time": current.strftime("%H:%M"),
+            "schedule_id":    row["schedule_id"],
+            "line":           row["line"],
+            "service_type":   row["service_type"],
+            "direction":      row["direction"],
+        })
+        current += timedelta(minutes=freq)
+
+    return times
+
+
 # ── TRANSACTIONAL OPERATIONS ──────────────────────────────────────────────────
 
 def execute_booking(
@@ -453,10 +504,11 @@ def execute_booking(
     travel_date: str,
     fare_class: str,
     seat_id: str,
+    departure_time: Optional[str] = None,
     ticket_type: str = "single",
 ) -> tuple[bool, dict | str]:
     """
-    Create a national rail booking for a logged-in user.
+    Create a national rail booking atomically (booking + payment in one transaction).
 
     Args:
         user_id:                e.g. "RU01" — must match the logged-in user
@@ -466,13 +518,149 @@ def execute_booking(
         travel_date:            e.g. "2025-06-01"
         fare_class:             "standard" or "first"
         seat_id:                e.g. "B05" (or "any" to auto-assign)
+        departure_time:         e.g. "07:00" — train departure from schedule's first station.
+                                If None, falls back to schedule's first_train_time.
         ticket_type:            "single" (default) or "return"
 
     Returns:
         (True, booking_dict)   on success
         (False, error_message) on failure
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    from datetime import datetime, timezone
+    import random, string
+
+    # ── 1. Fetch schedule info (fare, stops, departure_time fallback) ──────────
+    sql_schedule = """
+        SELECT s.first_train_time, s.fare_classes,
+               orig.stop_order AS orig_order,
+               dest.stop_order AS dest_order
+        FROM national_rail_schedules s
+        JOIN national_rail_schedule_stops orig ON orig.schedule_id = s.schedule_id
+            AND orig.station_id = %s
+        JOIN national_rail_schedule_stops dest ON dest.schedule_id = s.schedule_id
+            AND dest.station_id = %s
+        WHERE s.schedule_id = %s
+    """
+
+    # ── 2. Auto-assign seat if "any" ───────────────────────────────────────────
+    sql_available_seat = """
+        SELECT seat ->> 'seat_id' AS seat_id
+        FROM national_rail_seat_layouts sl,
+             jsonb_array_elements(sl.coaches) AS coach,
+             jsonb_array_elements(coach -> 'seats') AS seat
+        WHERE sl.schedule_id = %s
+          AND coach ->> 'fare_class' = %s
+          AND seat ->> 'seat_id' NOT IN (
+              SELECT seat_id FROM national_rail_bookings
+              WHERE schedule_id = %s AND travel_date = %s::date
+                AND status != 'cancelled'
+          )
+        LIMIT 1
+    """
+
+    sql_insert_booking = """
+        INSERT INTO national_rail_bookings
+            (booking_id, user_id, schedule_id, origin_station_id, destination_station_id,
+             travel_date, departure_time, ticket_type, fare_class, coach, seat_id,
+             stops_travelled, amount_usd, status, booked_at)
+        VALUES (%s, %s, %s, %s, %s, %s::date, %s::time, %s, %s, %s, %s, %s, %s, 'confirmed', %s)
+    """
+
+    sql_insert_payment = """
+        INSERT INTO payments
+            (payment_id, national_rail_booking_id, amount_usd, method, status, paid_at)
+        VALUES (%s, %s, %s, 'credit_card', 'paid', %s)
+    """
+
+    conn = psycopg2.connect(PG_DSN)
+    try:
+        conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+
+            # Fetch schedule + stop order
+            cur.execute(sql_schedule, (origin_station_id, destination_station_id, schedule_id))
+            sched = cur.fetchone()
+            if sched is None:
+                return False, "Schedule or stations not found."
+
+            stops_travelled = sched["dest_order"] - sched["orig_order"]
+
+            # Resolve departure_time: use provided value or fall back to first_train_time
+            dep_time = departure_time if departure_time else str(sched["first_train_time"])[:5]
+
+            # Resolve seat
+            actual_seat_id = seat_id
+            coach = None
+            if seat_id.lower() == "any":
+                cur.execute(sql_available_seat, (schedule_id, fare_class, schedule_id, travel_date))
+                seat_row = cur.fetchone()
+                if seat_row is None:
+                    return False, "No available seats for this fare class."
+                actual_seat_id = seat_row["seat_id"]
+
+            # Determine coach from seat_id (first character)
+            coach = actual_seat_id[0] if actual_seat_id else None
+
+            # Calculate fare
+            fare_classes = sched  # fare_classes is in the schedule
+            sql_fare = """
+                SELECT fare_classes -> %s -> 'base_fare_usd'    AS base,
+                       fare_classes -> %s -> 'per_stop_rate_usd' AS per_stop
+                FROM national_rail_schedules WHERE schedule_id = %s
+            """
+            cur.execute(sql_fare, (fare_class, fare_class, schedule_id))
+            fare_row = cur.fetchone()
+            if fare_row is None or fare_row["base"] is None:
+                return False, f"Invalid fare class: {fare_class}"
+            amount = round(float(fare_row["base"]) + float(fare_row["per_stop"]) * stops_travelled, 2)
+
+            # Generate IDs
+            booking_id = _gen_booking_id()
+            payment_id = _gen_payment_id()
+            now = datetime.now(timezone.utc)
+
+            # Check seat not already taken
+            cur.execute("""
+                SELECT 1 FROM national_rail_bookings
+                WHERE schedule_id = %s AND travel_date = %s::date
+                  AND seat_id = %s AND status != 'cancelled'
+            """, (schedule_id, travel_date, actual_seat_id))
+            if cur.fetchone():
+                return False, f"Seat {actual_seat_id} is already booked for this date."
+
+            # Insert booking and payment atomically
+            cur.execute(sql_insert_booking, (
+                booking_id, user_id, schedule_id,
+                origin_station_id, destination_station_id,
+                travel_date, dep_time, ticket_type, fare_class,
+                coach, actual_seat_id, stops_travelled, amount, now
+            ))
+            cur.execute(sql_insert_payment, (
+                payment_id, booking_id, amount, now
+            ))
+
+        conn.commit()
+        return True, {
+            "booking_id":    booking_id,
+            "user_id":       user_id,
+            "schedule_id":   schedule_id,
+            "seat_id":       actual_seat_id,
+            "coach":         coach,
+            "fare_class":    fare_class,
+            "departure_time": dep_time,
+            "travel_date":   travel_date,
+            "amount_usd":    amount,
+            "status":        "confirmed",
+        }
+
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        return False, "Booking conflict — please try again."
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
 
 
 def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | str]:

@@ -308,6 +308,8 @@ def query_station_connections(station_id: str) -> list[dict]: ...
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
   - **Decision:** Changed `date_of_birth DATE` to `year_of_birth SMALLINT` in `users` table. **Why:** The registration form (`register_user`) only collects year of birth; storing a full DATE would require fabricating month/day, which is semantically incorrect. Seeding extracts the year from the mock data's full date string.
+- [x] Agent modifications (Task 6 Extension):
+  - **Decision:** Modified `skeleton/agent.py` to add `get_departure_times` tool and `departure_time` parameter to `make_booking`. **Why:** The original agent had no way to show users available train departure times or pass a selected time to `execute_booking`. Without this, `departure_time` in `national_rail_bookings` could only be filled with `first_train_time` (inaccurate). The extension adds `query_departure_times` to `queries.py` and wires it through the agent so users can select the exact train they want before booking.
 - [x] Graph schema:
   - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
   - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
