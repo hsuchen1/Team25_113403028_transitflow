@@ -413,15 +413,15 @@ def seed_users(cur):
             first_name,
             last_name,
             user["email"],
-            user.get("phone"),       # nullable: phone number is optional
-            user["date_of_birth"],
+            user.get("phone"),                        # nullable: phone number is optional
+            int(user["date_of_birth"][:4]),            # extract year only; schema stores SMALLINT year_of_birth
             user["registered_at"],
             user["is_active"],
         ))
 
     n = insert_many(cur, "users",
                     ["user_id", "first_name", "last_name", "email",
-                        "phone", "date_of_birth", "registered_at", "is_active"],
+                        "phone", "year_of_birth", "registered_at", "is_active"],
                     rows)
     print(f"  users: {n} rows")
 
