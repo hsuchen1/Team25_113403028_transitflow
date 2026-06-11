@@ -441,7 +441,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     return result_list
 
 
-# ── STATION CONNECTIONS ───────────────────────────────────────────────────────
+# ── TASK 6: STATION CONNECTIONS ───────────────────────────────────────────────────────
 
 def query_station_connections(station_id: str) -> list[dict]:
     """
