@@ -22,7 +22,7 @@ All files listed below also include a `# TASK 6 EXTENSION:` comment near the top
 ### Graph Database
 - **New/Modified Functions**:
   - `query_all_paths_between()` / `find_all_paths()`: Extended Neo4j traversal limiting results to top N paths to prevent node explosion, fulfilling complex multi-network journey planning.
-  - `query_station_connections()`: Returns direct neighbors and travel time metadata from the Graph.
+
 
 ### Agent Logic
 - **New Tools**: `get_departure_times`, `find_all_paths`, `get_station_connections`.
