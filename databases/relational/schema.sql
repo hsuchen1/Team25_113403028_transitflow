@@ -13,13 +13,18 @@
 
 -- Users and Credentials
 CREATE TABLE users (
+    -- PK choice: Surrogate SERIAL key for internal row identity; user_id is kept as UNIQUE NOT NULL
+    -- to preserve the natural identifier used across all FK references and application logic.
+    -- SERIAL was chosen over UUID v7 for simplicity and lower storage overhead (4 vs 16 bytes).
     id SERIAL PRIMARY KEY,
     user_id VARCHAR(20) UNIQUE NOT NULL,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
-    date_of_birth DATE,
+    -- year_of_birth: stored as SMALLINT because the registration form only collects year;
+    -- storing a full DATE would require fabricating month/day, which is semantically incorrect.
+    year_of_birth SMALLINT,
     registered_at TIMESTAMPTZ,
     is_active BOOLEAN,
     -- Delete strategy: We use Soft Delete (deleted_at TIMESTAMPTZ) to preserve historical integrity, particularly for bookings and financial records, complying with standard business rules.
@@ -37,6 +42,16 @@ CREATE TABLE user_credentials (
 );
 
 -- Stations
+-- PK choice (applies to all tables below unless noted): every table gets a
+-- surrogate `id SERIAL PRIMARY KEY` for internal row identity. The original
+-- VARCHAR business identifier (station_id, schedule_id, booking_id, etc.) is
+-- kept as UNIQUE NOT NULL — it remains the key used by FK references and
+-- application logic (queries.py), so no FK or query changes are needed.
+-- Why: per course guidance, VARCHAR primary keys should generally be avoided
+-- (no DB-enforced uniqueness until insert time, plus indexing/performance
+-- downsides); SERIAL/UUID surrogate keys are the norm, mixed per table need.
+-- SERIAL (not UUID) was chosen throughout for consistency with the existing
+-- `users`/`user_credentials` pattern and lower storage overhead.
 CREATE TABLE metro_stations (
     id SERIAL PRIMARY KEY,
     station_id VARCHAR(20) UNIQUE NOT NULL,

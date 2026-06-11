@@ -1,3 +1,6 @@
+# TASK 6 EXTENSION: departure_time booking flow
+# Added query_departure_times tool so users can select a specific train departure
+# before booking, enabling correct departure_time to be stored in national_rail_bookings.
 """
 # TASK 6 EXTENSION: new graph queries "query_all_paths_between" 
 TransitFlow — Intelligent Agent
@@ -48,6 +51,7 @@ from databases.relational.queries import (
     execute_booking,
     execute_cancellation,
     query_policy_vector_search,
+    query_departure_times,
 )
 from databases.graph.queries import (
     query_shortest_route,
@@ -124,12 +128,16 @@ TOOLS = [
         "description": (
             "Check available national rail trains and services between two stations. "
             "Use for any question about what trains run, schedules, timetables, or availability. "
-            "Returns schedules, service types, fare classes, and seat occupancy."
+            "Returns schedules, service types, fare classes, and seat occupancy. "
+            "available_seats is only a per-departure figure if departure_time is given "
+            "(pick one via get_departure_times); otherwise it is a less precise "
+            "schedule+date-wide approximation."
         ),
         "parameters": {
             "origin_id":      {"type": "string", "description": "National rail station ID e.g. NR01"},
             "destination_id": {"type": "string", "description": "National rail station ID e.g. NR05"},
             "travel_date":    {"type": "string", "description": "YYYY-MM-DD (optional — omit for general info)"},
+            "departure_time": {"type": "string", "description": "HH:MM (optional — from get_departure_times; scopes available_seats to that specific train)"},
         },
         "required": ["origin_id", "destination_id"],
     },
@@ -188,14 +196,33 @@ TOOLS = [
         "name": "get_available_seats",
         "description": (
             "Show available seats on a national rail service for a given date and fare class. "
-            "Always call this before making a first-class booking, or when the user wants to select a seat."
+            "Always call this before making a first-class booking, or when the user wants to select a seat. "
+            "Pass departure_time (from get_departure_times) to scope results to that specific train; "
+            "otherwise seats are checked across the whole schedule+date (less precise)."
         ),
         "parameters": {
             "schedule_id":  {"type": "string", "description": "e.g. NR_SCH01"},
             "travel_date":  {"type": "string", "description": "YYYY-MM-DD"},
             "fare_class":   {"type": "string", "description": "standard or first"},
+            "departure_time": {"type": "string", "description": "HH:MM (optional — from get_departure_times; scopes seat check to that specific train)"},
         },
         "required": ["schedule_id", "travel_date", "fare_class"],
+    },
+    {
+        "name": "get_departure_times",
+        "description": (
+            "Get all available departure times for a national rail schedule. "
+            "Call this AFTER check_national_rail_availability to show the user "
+            "which specific train times they can board. The user must select a "
+            "departure time before making a booking. If boarding_station_id is "
+            "provided, each result also includes an ESTIMATED arrival time at that "
+            "station — present this to the user clearly labeled as an estimate."
+        ),
+        "parameters": {
+            "schedule_id": {"type": "string", "description": "e.g. NR_SCH01"},
+            "boarding_station_id": {"type": "string", "description": "Optional. The station the user will board at, e.g. NR03. Used to estimate arrival time at that station."},
+        },
+        "required": ["schedule_id"],
     },
     {
         "name": "make_booking",
@@ -209,11 +236,12 @@ TOOLS = [
             "origin_station_id":      {"type": "string", "description": "e.g. NR01"},
             "destination_station_id": {"type": "string", "description": "e.g. NR05"},
             "travel_date":            {"type": "string", "description": "YYYY-MM-DD"},
+            "departure_time":         {"type": "string", "description": "HH:MM — the train's departure time from the schedule's first station, selected from get_departure_times"},
             "fare_class":             {"type": "string", "description": "standard or first"},
             "seat_id":                {"type": "string", "description": "Specific seat ID (e.g. B05) or 'any' for auto-assign"},
             "ticket_type":            {"type": "string", "description": "single or return (default single)"},
         },
-        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "fare_class", "seat_id"],
+        "required": ["schedule_id", "origin_station_id", "destination_station_id", "travel_date", "departure_time", "fare_class", "seat_id"],
     },
     {
         "name": "cancel_booking",
@@ -303,12 +331,13 @@ TOOLS = [
 
 TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
-check_national_rail_availability(origin_id, destination_id, travel_date?)
+check_national_rail_availability(origin_id, destination_id, travel_date?, departure_time?)  # departure_time scopes available_seats to one specific train
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
+get_departure_times(schedule_id, boarding_station_id?)  # boarding_station_id adds an ESTIMATED arrival time at that station
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
-get_available_seats(schedule_id, travel_date, fare_class)
-make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, fare_class, seat_id, ticket_type?)
+get_available_seats(schedule_id, travel_date, fare_class, departure_time?)  # departure_time scopes seat check to one specific train
+make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, departure_time, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()
 search_policy(query)
@@ -378,6 +407,9 @@ def _execute_tool(
                 return json.dumps({"error": "No user is currently logged in."})
             result = query_user_bookings(current_user_email)
 
+        elif tool_name == "get_departure_times":
+            result = query_departure_times(**params)
+
         elif tool_name == "get_available_seats":
             result = query_available_seats(**params)
 
@@ -393,6 +425,7 @@ def _execute_tool(
                 origin_station_id=params["origin_station_id"],
                 destination_station_id=params["destination_station_id"],
                 travel_date=params["travel_date"],
+                departure_time=params.get("departure_time"),
                 fare_class=params["fare_class"],
                 seat_id=params["seat_id"],
                 ticket_type=params.get("ticket_type", "single"),
@@ -733,8 +766,12 @@ JSON:"""
                            "schedule", "timetable", "available", "availability"}
         if any(kw in _lower for kw in _avail_triggers):
             o, d = _station_ids[0].upper(), _station_ids[1].upper()
+            # Use search + group(0) (not the raw split token) so trailing
+            # punctuation like "...on 2026-06-20?" doesn't get passed through
+            # to query_national_rail_availability and break strptime.
             _travel_date = next(
-                (w for w in _lower.split() if re.match(r'\d{4}-\d{2}-\d{2}', w)), None
+                (m.group(0) for w in _lower.split() if (m := re.match(r'\d{4}-\d{2}-\d{2}', w))),
+                None,
             )
             _params = {"origin_id": o, "destination_id": d}
             if _travel_date:
@@ -795,10 +832,25 @@ JSON:"""
         )
         if debug:
             debug_info.append(f"**Data (normalised):**\n{data_block}")
+        extra_instructions = ""
+        if any(tr["tool"] == "get_user_bookings" for tr in tool_results):
+            # TASK 6 EXTENSION: get_user_bookings returns two separate lists
+            # (national_rail and metro) with DIFFERENT field schemas. Small
+            # models tend to merge them into one list and invent missing
+            # fields (e.g. booking_id/seat_id on a metro trip) as "None".
+            # Guard against that explicitly.
+            extra_instructions = (
+                "\n\nIMPORTANT: The data above has separate 'national_rail' and 'metro' "
+                "sections with DIFFERENT fields. List them in two separate groups, "
+                "using only the fields that exist for each entry. Do NOT merge them "
+                "into one list, do NOT invent or fill in missing fields with None/null, "
+                "and do NOT claim bookings can be viewed without logging in — "
+                "this data is only available to a logged-in user."
+            )
         content = (
             f"DATA FROM TRANSITFLOW DATABASE:\n{data_block}"
             f"\n\nUser asks: {user_message}"
-            f"\n\nAnswer using only the data above:"
+            f"\n\nAnswer using only the data above:{extra_instructions}"
         )
     elif any(kw in user_message.lower() for kw in _DB_KEYWORDS):
         # No tool was called but the question needs DB data — prevent hallucination.

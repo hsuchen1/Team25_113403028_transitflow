@@ -54,13 +54,16 @@ TransitFlow is a Python-based AI chat assistant for a fictional transit operator
 ```sql
 -- Users and Credentials
 CREATE TABLE users (
+    -- PK choice: Surrogate SERIAL key for internal row identity; user_id is kept as UNIQUE NOT NULL
+    -- to preserve the natural identifier used across all FK references and application logic.
+    -- SERIAL was chosen over UUID v7 for simplicity and lower storage overhead (4 vs 16 bytes).
     id SERIAL PRIMARY KEY,
     user_id VARCHAR(20) UNIQUE NOT NULL,
     first_name VARCHAR(50) NOT NULL,
     last_name VARCHAR(50) NOT NULL,
     email VARCHAR(255) UNIQUE NOT NULL,
     phone VARCHAR(20),
-    date_of_birth DATE,
+    year_of_birth SMALLINT,
     registered_at TIMESTAMPTZ,
     is_active BOOLEAN,
     -- Delete strategy: We use Soft Delete (deleted_at TIMESTAMPTZ) to preserve historical integrity, particularly for bookings and financial records, complying with standard business rules.
@@ -244,18 +247,17 @@ CREATE TABLE feedback (
 ## Agreed Graph Schema
 
 Node labels:
-- `Station` (Generic label for all stations)
 - `MetroStation` (Specific label for metro stations)
 - `NationalRailStation` (Specific label for national rail stations)
 
 Relationship types:
-- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`)
-- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`)
-- `[:INTERCHANGE_TO]` (Properties: `transfer_time_min` e.g. 5)
+- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`, `cost_usd`)
+- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`, `cost_standard_usd`, `cost_first_usd`)
+- `[:INTERCHANGE_TO]` (Properties: `travel_time_min` e.g. 5)
 
 Key properties:
-- Node: `station_id` (Unique constraint), `name`
-- Edge: `travel_time_min` or `transfer_time_min` (Used as weights for shortest path routing)
+- Node: `station_id` (Unique constraint), `name`, `lines`, `is_interchange_metro`, `is_interchange_national_rail`
+- Edge: `travel_time_min` (Used as weights for fastest route routing), and `cost_*_usd` properties (Used as weights for cheapest route routing)
 
 ## Function Signatures We Are Implementing
 
@@ -305,7 +307,8 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
 - [x] Schema design:
   - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
   - **Decision:** Added `id SERIAL PRIMARY KEY` to `users` table, while keeping `user_id` as `UNIQUE NOT NULL`. Chose Auto-Increment over UUID v7. **Why:** Auto-increment (`SERIAL`) was chosen over UUID v7 because it provides native, sequential ID generation without relying on external Python packages or PostgreSQL extensions (like `pg_uuidv7`). It also offers better index performance and lower storage overhead (4 bytes vs 16 bytes). Foreign keys continue to safely reference the unique `user_id`.
-
+  - **Decision:** Refactored all tables to use Surrogate Keys (`id SERIAL PRIMARY KEY`) instead of VARCHAR primary keys, while keeping original business identifiers (e.g. `station_id`) as `UNIQUE NOT NULL`. **Why:** (1) **Surrogate vs Natural**: An integer primary key significantly improves B-tree index efficiency compared to wide VARCHAR keys, and decoupling the internal identity from external business identifiers prevents cascading updates if a business ID ever changes. (2) **SERIAL vs UUID**: We chose Auto-Increment (`SERIAL`) over UUIDs because it provides native, sequential ID generation without relying on PostgreSQL extensions (like `uuid-ossp`). It also offers much better index locality and lower storage overhead (4 bytes vs 16 bytes per row), which is optimal for our single-node architecture where distributed ID generation (the main advantage of UUIDs) is unnecessary.
+  - **Decision:** `queries.py`'s `execute_booking` now generates `booking_id`/`payment_id` from the new `id SERIAL` sequences instead of a random `BK-XXXXXX`/`PM-XXXXXX` suffix. New helper `_gen_id(cur, table, prefix)` runs `SELECT nextval(pg_get_serial_sequence(table, 'id'))` and formats e.g. `id=21 -> "BK021"`; the same reserved integer is then explicitly inserted into the row's `id` column (so `id` and the business ID stay numerically in sync) via updated `sql_insert_booking`/`sql_insert_payment` (`id` added as first column + param). Removed now-unused `random`/`string` imports and old `_gen_booking_id`/`_gen_payment_id`. **Why:** User asked for generated booking/payment IDs to follow the same zero-padded sequential convention as `user_id` and the seed data (`BK001`, `PM001`, ...) instead of an unrelated random string, now that an `id SERIAL` sequence exists to derive them from.
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
   - **Decision:** `user_credentials` table decoupled from `users` with `UNIQUE(user_id)`. **Why:** Better security isolation, compliant with rules, and enforces one credential record per user so credential seeding is idempotent.
   - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
@@ -314,10 +317,19 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
   - **Decision:** Use `TIMESTAMPTZ` for all datetimes. **Why:** Required by grading criteria.
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
-  - **Decision:** Refactored all tables to use Surrogate Keys (`id SERIAL PRIMARY KEY`) instead of VARCHAR primary keys, while keeping original business identifiers (e.g. `station_id`) as `UNIQUE NOT NULL`. **Why:** (1) **Surrogate vs Natural**: An integer primary key significantly improves B-tree index efficiency compared to wide VARCHAR keys, and decoupling the internal identity from external business identifiers prevents cascading updates if a business ID ever changes. (2) **SERIAL vs UUID**: We chose Auto-Increment (`SERIAL`) over UUIDs because it provides native, sequential ID generation without relying on PostgreSQL extensions (like `uuid-ossp`). It also offers much better index locality and lower storage overhead (4 bytes vs 16 bytes per row), which is optimal for our single-node architecture where distributed ID generation (the main advantage of UUIDs) is unnecessary.
+  - **Decision:** Changed `date_of_birth DATE` to `year_of_birth SMALLINT` in `users` table. **Why:** The registration form (`register_user`) only collects year of birth; storing a full DATE would require fabricating month/day, which is semantically incorrect. Seeding extracts the year from the mock data's full date string.
+- [x] Agent modifications (Task 6 Extension):
+  - **Decision:** Modified `skeleton/agent.py` to add `get_departure_times` tool and `departure_time` parameter to `make_booking`. **Why:** The original agent had no way to show users available train departure times or pass a selected time to `execute_booking`. Without this, `departure_time` in `national_rail_bookings` could only be filled with `first_train_time` (inaccurate). The extension adds `query_departure_times` to `queries.py` and wires it through the agent so users can select the exact train they want before booking.
+  - **Decision:** `query_departure_times` accepts an optional `boarding_station_id`. When provided, each result also includes `estimated_arrival_at_boarding_station` (computed as `departure_time + travel_time_from_origin_min` for that stop) plus a `note` explicitly labeling it as an ESTIMATE. **Why:** `departure_time` represents when the train leaves the schedule's origin station, not when it reaches the user's boarding station — without this, a user boarding mid-route would be shown a misleading time. The agent's `get_departure_times` tool description instructs the LLM to present this value as an estimate.
+  - **Decision:** Each `schedule_id` actually represents many independent daily departures (`first_train_time` + N × `frequency_min`, up to `last_train_time`), each with its own seat pool — but seat-occupancy logic was previously scoped only to `(schedule_id, travel_date)`, treating all departures of a day as one shared pool. Fixed across `queries.py`: `execute_booking`'s seat-conflict check and auto-assign query (`sql_available_seat`) now also filter on `departure_time`; `query_available_seats` and `query_national_rail_availability` gained an optional `departure_time` parameter that scopes their seat-availability counts to one specific departure (omitting it falls back to the old, less-precise schedule+date-wide approximation). **Why:** Without this, two different trains running on the same schedule_id/date could incorrectly be treated as fighting over the same seats, and `available_seats` counts could under-report capacity.
+  - **Decision:** `execute_booking` now validates `departure_time` (if supplied) against the schedule's actual timetable: must be `>= first_train_time` and `<= last_train_time`, and `(departure_time - first_train_time) % frequency_min == 0` (i.e. must be a time `query_departure_times` would generate). Also validates the requested `travel_date`'s day-of-week is in `operates_on`. Both checks return `False` with an explanatory error message if violated. **Why:** Previously any string could be passed as `departure_time`, allowing bookings for trains that don't actually run (wrong time-of-day or wrong day of week), which would corrupt the per-departure seat-pool logic above.
+  - **Decision:** Propagated optional `departure_time` parameter to `agent.py`'s `check_national_rail_availability` and `get_available_seats` tool definitions (TOOLS list + TOOLS_SCHEMA), with descriptions explaining it scopes `available_seats`/seat results to one specific train (selected via `get_departure_times`). `_execute_tool` dispatcher needed no change since both calls already use `**params` passthrough. **Why:** Required so the LLM can actually supply the new parameter; otherwise the `queries.py` fix would be unreachable from the agent.
+  - **Decision:** Added an explicit instruction block to the final-answer prompt (Step 3, when `get_user_bookings` is among the tool results) telling the LLM to keep `national_rail` and `metro` results in separate groups with their own fields, never invent/null-fill missing fields by merging the two schemas, and never claim booking history is viewable without login. **Why:** Small Ollama models (e.g. llama3.2:1b) were observed merging the two differently-shaped lists into one, fabricating a fake booking entry full of `None`s for the metro trip, and incorrectly stating no login was required — even though `query_user_bookings`/`_execute_tool` already correctly require a logged-in user and return correctly separated, correctly-shaped data.
 - [x] Graph schema:
-  - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
-  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
+  - **Decision:** Static Topology Graph with specific network labels (`:MetroStation`, `:NationalRailStation`). Removed the generic `:Station` label. **Why:** Simplifies the seed script. Both node types can easily be matched together where necessary.
+  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_TO]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for APOC Dijkstra shortest-path algorithms.
+  - **Decision:** Unified `transfer_time_min` into `travel_time_min` for `[:INTERCHANGE_TO]`. **Why:** This allows `apoc.algo.allSimplePaths` and `dijkstra` to sum a single common property (`travel_time_min`) across all relationship types.
+  - **Decision:** Pre-calculated fare costs are stored directly as edge weights (`cost_usd` on `METRO_LINK`, `cost_standard_usd`/`cost_first_usd` on `RAIL_LINK`). **Why:** Allows `query_cheapest_route` to find the cheapest path using Dijkstra based on precomputed cost weights instead of trying to dynamically calculate table-based fares within the graph.
 
 ## Prompts That Worked
 
