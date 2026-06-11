@@ -1,5 +1,7 @@
 """
-# TASK 6 EXTENSION: 
+# TASK 6 EXTENSION: departure_time booking flow
+    Added query_departure_times tool so users can select a specific train departure
+    before booking, enabling correct departure_time to be stored in national_rail_bookings.
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
 This module handles all queries to PostgreSQL.

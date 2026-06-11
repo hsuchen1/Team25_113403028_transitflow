@@ -1,8 +1,5 @@
-# TASK 6 EXTENSION: departure_time booking flow
-# Added query_departure_times tool so users can select a specific train departure
-# before booking, enabling correct departure_time to be stored in national_rail_bookings.
 """
-# TASK 6 EXTENSION: new graph queries "query_all_paths_between" 
+# TASK 6 EXTENSION: new graph queries "query_all_paths_between" and new relational query "query_departure_times"
 TransitFlow — Intelligent Agent
 ================================
 This is the brain of the system.
