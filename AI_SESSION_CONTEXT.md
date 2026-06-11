@@ -247,18 +247,17 @@ CREATE TABLE feedback (
 ## Agreed Graph Schema
 
 Node labels:
-- `Station` (Generic label for all stations)
 - `MetroStation` (Specific label for metro stations)
 - `NationalRailStation` (Specific label for national rail stations)
 
 Relationship types:
-- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`)
-- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`)
-- `[:INTERCHANGE_TO]` (Properties: `transfer_time_min` e.g. 5)
+- `[:METRO_LINK]` (Properties: `line`, `travel_time_min`, `cost_usd`)
+- `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`, `cost_standard_usd`, `cost_first_usd`)
+- `[:INTERCHANGE_TO]` (Properties: `travel_time_min` e.g. 5)
 
 Key properties:
-- Node: `station_id` (Unique constraint), `name`
-- Edge: `travel_time_min` or `transfer_time_min` (Used as weights for shortest path routing)
+- Node: `station_id` (Unique constraint), `name`, `lines`, `is_interchange_metro`, `is_interchange_national_rail`
+- Edge: `travel_time_min` (Used as weights for fastest route routing), and `cost_*_usd` properties (Used as weights for cheapest route routing)
 
 ## Function Signatures We Are Implementing
 
@@ -327,8 +326,10 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
   - **Decision:** Propagated optional `departure_time` parameter to `agent.py`'s `check_national_rail_availability` and `get_available_seats` tool definitions (TOOLS list + TOOLS_SCHEMA), with descriptions explaining it scopes `available_seats`/seat results to one specific train (selected via `get_departure_times`). `_execute_tool` dispatcher needed no change since both calls already use `**params` passthrough. **Why:** Required so the LLM can actually supply the new parameter; otherwise the `queries.py` fix would be unreachable from the agent.
   - **Decision:** Added an explicit instruction block to the final-answer prompt (Step 3, when `get_user_bookings` is among the tool results) telling the LLM to keep `national_rail` and `metro` results in separate groups with their own fields, never invent/null-fill missing fields by merging the two schemas, and never claim booking history is viewable without login. **Why:** Small Ollama models (e.g. llama3.2:1b) were observed merging the two differently-shaped lists into one, fabricating a fake booking entry full of `None`s for the metro trip, and incorrectly stating no login was required — even though `query_user_bookings`/`_execute_tool` already correctly require a logged-in user and return correctly separated, correctly-shaped data.
 - [x] Graph schema:
-  - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
-  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
+  - **Decision:** Static Topology Graph with specific network labels (`:MetroStation`, `:NationalRailStation`). Removed the generic `:Station` label. **Why:** Simplifies the seed script. Both node types can easily be matched together where necessary.
+  - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_TO]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for APOC Dijkstra shortest-path algorithms.
+  - **Decision:** Unified `transfer_time_min` into `travel_time_min` for `[:INTERCHANGE_TO]`. **Why:** This allows `apoc.algo.allSimplePaths` and `dijkstra` to sum a single common property (`travel_time_min`) across all relationship types.
+  - **Decision:** Pre-calculated fare costs are stored directly as edge weights (`cost_usd` on `METRO_LINK`, `cost_standard_usd`/`cost_first_usd` on `RAIL_LINK`). **Why:** Allows `query_cheapest_route` to find the cheapest path using Dijkstra based on precomputed cost weights instead of trying to dynamically calculate table-based fares within the graph.
 
 ## Prompts That Worked
 
