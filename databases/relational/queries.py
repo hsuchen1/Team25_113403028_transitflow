@@ -1,4 +1,5 @@
 """
+# TASK 6 EXTENSION: 
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
 This module handles all queries to PostgreSQL.
@@ -63,8 +64,6 @@ def example_query() -> dict:
             cur.execute("SELECT current_database() AS db;")
             return dict(cur.fetchone())
 
-# TODO: Implement the query_ and execute_ functions below.
-# ─────────────────────────────────────────────────────────────────────────────
 
 
 # ── NATIONAL RAIL AVAILABILITY ────────────────────────────────────────────────

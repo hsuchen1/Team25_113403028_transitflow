@@ -1,4 +1,5 @@
 """
+# TASK 6 EXTENSION: new queries "query_all_paths_between" added to find all paths between two stations, sorted by travel time.
 TransitFlow — Neo4j Graph Database Layer (Updated for Custom Schema)
 =========================================
 This module handles all queries to Neo4j, fully compatible with the new seed_neo4j.py.
@@ -62,7 +63,6 @@ def query_shortest_route(
     with _driver() as driver:
         with driver.session() as session:
             if is_cross_network:
-                # Cross-network: Allow all relevant relationship types
                 cypher = """
                 MATCH (start {station_id: $origin_id})
                 MATCH (end {station_id: $destination_id})
@@ -73,7 +73,6 @@ def query_shortest_route(
                 LIMIT 1
                 """
             else:
-                # Same-network: Filter strictly by network type to use correct relationship
                 node_label = "MetroStation" if origin_is_metro else "NationalRailStation"
                 rel_type = "METRO_LINK" if origin_is_metro else "RAIL_LINK"
                 cypher = f"""
@@ -108,7 +107,7 @@ def query_shortest_route(
             
             legs = []
             for rel in path.relationships:
-                line = rel.get("line", "INTERCHANGE")  # INTERCHANGE_TO has no line property
+                line = rel.get("line", "INTERCHANGE")  
                 legs.append({
                     "from": rel.start_node["station_id"],
                     "to": rel.end_node["station_id"],
@@ -310,7 +309,6 @@ def query_interchange_path(origin_id: str, destination_id: str) -> dict:
             "reason": "Invalid cross-network routing parameters"
         }
     
-    # Target label settings based on direction
     start_label = "MetroStation" if origin_is_metro else "NationalRailStation"
     end_label = "NationalRailStation" if origin_is_metro else "MetroStation"
     
@@ -441,7 +439,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     return result_list
 
 
-# ── TASK 6: STATION CONNECTIONS ───────────────────────────────────────────────────────
+# ── STATION CONNECTIONS ───────────────────────────────────────────────────────
 
 def query_station_connections(station_id: str) -> list[dict]:
     """
@@ -479,7 +477,7 @@ def query_station_connections(station_id: str) -> list[dict]:
                         "travel_time_min": rel.get("travel_time_min", 0),
                         "cost_usd": rel.get("cost_usd") if relationship_type == "METRO_LINK" else rel.get("cost_standard_usd")
                     }
-                else:  # INTERCHANGE_TO
+                else: 
                     connection_dict = {
                         "neighbor_id": neighbor["station_id"],
                         "neighbor_name": neighbor.get("name", "Unknown"),
@@ -495,17 +493,15 @@ def query_station_connections(station_id: str) -> list[dict]:
 
 
 # ── TASK 6 EXTENSION: ALL PATHS BETWEEN ───────────────────────────────────────
-
 def query_all_paths_between(
     origin_id: str,
     destination_id: str,
     network: str = "auto",
-    # limit: int = 5,
 ) -> list[dict]:
     """
     Find all possible paths between two stations, sorted by travel time.
     """
-    limit = 5  # For now, we can keep a default limit to prevent excessive results
+    limit = 5  # keep a default limit to prevent excessive results
     if origin_id == destination_id:
         return []
     
@@ -518,6 +514,7 @@ def query_all_paths_between(
     
     paths_data = []
     
+    # Validate parameters before querying
     with _driver() as driver:
         with driver.session() as session:
             if is_cross_network:
@@ -545,6 +542,7 @@ def query_all_paths_between(
             
             result = session.run(cypher, origin_id=origin_id, destination_id=destination_id, limit=limit)
             
+            # Process each path to extract details
             for path_index, record in enumerate(result, 1):
                 path = record["path"]
                 total_time_min = record["total_time"]
