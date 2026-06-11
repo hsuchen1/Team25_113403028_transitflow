@@ -708,8 +708,12 @@ JSON:"""
                            "schedule", "timetable", "available", "availability"}
         if any(kw in _lower for kw in _avail_triggers):
             o, d = _station_ids[0].upper(), _station_ids[1].upper()
+            # Use search + group(0) (not the raw split token) so trailing
+            # punctuation like "...on 2026-06-20?" doesn't get passed through
+            # to query_national_rail_availability and break strptime.
             _travel_date = next(
-                (w for w in _lower.split() if re.match(r'\d{4}-\d{2}-\d{2}', w)), None
+                (m.group(0) for w in _lower.split() if (m := re.match(r'\d{4}-\d{2}-\d{2}', w))),
+                None,
             )
             _params = {"origin_id": o, "destination_id": d}
             if _travel_date:
@@ -769,10 +773,25 @@ JSON:"""
         )
         if debug:
             debug_info.append(f"**Data (normalised):**\n{data_block}")
+        extra_instructions = ""
+        if any(tr["tool"] == "get_user_bookings" for tr in tool_results):
+            # TASK 6 EXTENSION: get_user_bookings returns two separate lists
+            # (national_rail and metro) with DIFFERENT field schemas. Small
+            # models tend to merge them into one list and invent missing
+            # fields (e.g. booking_id/seat_id on a metro trip) as "None".
+            # Guard against that explicitly.
+            extra_instructions = (
+                "\n\nIMPORTANT: The data above has separate 'national_rail' and 'metro' "
+                "sections with DIFFERENT fields. List them in two separate groups, "
+                "using only the fields that exist for each entry. Do NOT merge them "
+                "into one list, do NOT invent or fill in missing fields with None/null, "
+                "and do NOT claim bookings can be viewed without logging in — "
+                "this data is only available to a logged-in user."
+            )
         content = (
             f"DATA FROM TRANSITFLOW DATABASE:\n{data_block}"
             f"\n\nUser asks: {user_message}"
-            f"\n\nAnswer using only the data above:"
+            f"\n\nAnswer using only the data above:{extra_instructions}"
         )
     elif any(kw in user_message.lower() for kw in _DB_KEYWORDS):
         # No tool was called but the question needs DB data — prevent hallucination.

@@ -23,8 +23,6 @@ are already implemented — do not modify them.
 from __future__ import annotations
 
 import json
-import random
-import string
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -41,14 +39,20 @@ def _connect():
     return conn
 
 
-def _gen_booking_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"BK-{suffix}"
-
-
-def _gen_payment_id() -> str:
-    suffix = "".join(random.choices(string.ascii_uppercase + string.digits, k=6))
-    return f"PM-{suffix}"
+# SCHEMA RETROFIT: business IDs (booking_id, payment_id, ...) now follow the
+# same convention as user_id — a zero-padded number derived from the table's
+# `id SERIAL` sequence (e.g. id=21 -> "BK021"), matching the seed data format
+# (BK001, PM001, ...) instead of the previous random "BK-XXXXXX" suffix.
+def _gen_id(cur, table: str, prefix: str) -> tuple[int, str]:
+    """
+    Reserve the next surrogate `id` value for `table` and format a business
+    identifier from it, e.g. _gen_id(cur, "national_rail_bookings", "BK")
+    -> (21, "BK021"). The returned int must be inserted into the row's `id`
+    column so the surrogate PK and the business ID stay in sync.
+    """
+    cur.execute("SELECT nextval(pg_get_serial_sequence(%s, 'id')) AS nid", (table,))
+    next_id = cur.fetchone()["nid"]
+    return next_id, f"{prefix}{next_id:03d}"
 
 
 # ── Example ───────────────────────────────────────────────────────────────────
@@ -630,16 +634,16 @@ def execute_booking(
 
     sql_insert_booking = """
         INSERT INTO national_rail_bookings
-            (booking_id, user_id, schedule_id, origin_station_id, destination_station_id,
+            (id, booking_id, user_id, schedule_id, origin_station_id, destination_station_id,
              travel_date, departure_time, ticket_type, fare_class, coach, seat_id,
              stops_travelled, amount_usd, status, booked_at)
-        VALUES (%s, %s, %s, %s, %s, %s::date, %s::time, %s, %s, %s, %s, %s, %s, 'confirmed', %s)
+        VALUES (%s, %s, %s, %s, %s, %s, %s::date, %s::time, %s, %s, %s, %s, %s, %s, 'confirmed', %s)
     """
 
     sql_insert_payment = """
         INSERT INTO payments
-            (payment_id, national_rail_booking_id, amount_usd, method, status, paid_at)
-        VALUES (%s, %s, %s, 'credit_card', 'paid', %s)
+            (id, payment_id, national_rail_booking_id, amount_usd, method, status, paid_at)
+        VALUES (%s, %s, %s, %s, 'credit_card', 'paid', %s)
     """
 
     conn = psycopg2.connect(PG_DSN)
@@ -719,9 +723,9 @@ def execute_booking(
                 return False, f"Invalid fare class: {fare_class}"
             amount = round(float(fare_row["base"]) + float(fare_row["per_stop"]) * stops_travelled, 2)
 
-            # Generate IDs
-            booking_id = _gen_booking_id()
-            payment_id = _gen_payment_id()
+            # Generate IDs (kept in sync with the new id SERIAL PK — see _gen_id)
+            booking_seq, booking_id = _gen_id(cur, "national_rail_bookings", "BK")
+            payment_seq, payment_id = _gen_id(cur, "payments", "PM")
             now = datetime.now(timezone.utc)
 
             # Check seat not already taken on this specific departure
@@ -739,13 +743,13 @@ def execute_booking(
 
             # Insert booking and payment atomically
             cur.execute(sql_insert_booking, (
-                booking_id, user_id, schedule_id,
+                booking_seq, booking_id, user_id, schedule_id,
                 origin_station_id, destination_station_id,
                 travel_date, dep_time, ticket_type, fare_class,
                 coach, actual_seat_id, stops_travelled, amount, now
             ))
             cur.execute(sql_insert_payment, (
-                payment_id, booking_id, amount, now
+                payment_seq, payment_id, booking_id, amount, now
             ))
 
         conn.commit()
