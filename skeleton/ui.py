@@ -259,9 +259,11 @@ EXAMPLES = [
     "What national rail trains run from Central (NR01) to Stonehaven (NR05)?",
     "What is the fastest metro route from MS01 to MS14?",
     "How do I get from Central Square (MS01) to Stonehaven (NR05)?",
-    "If Old Town station (NR03) is closed, what alternative routes exist from NR01 to NR05?",
+    "If Old Town junction  (NR03) is closed, what alternative routes exist from NR01 to NR05?",
     "My train was delayed 45 minutes — what compensation am I entitled to?",
     "What is the company policy on travelling with a bicycle on national rail?",
+    "Can you list all possible paths from Central Square (MS01) to Bridgeport (NR06)?",
+    "Which stations connect directly to Central Square (MS01)?",
 ]
 
 
