@@ -55,6 +55,7 @@ from databases.graph.queries import (
     query_interchange_path,
     query_delay_ripple,
     query_station_connections,
+    # Task 6 Extension:
     query_all_paths_between,
 )
 
@@ -274,7 +275,6 @@ TOOLS = [
         },
         "required": ["station_id"],
     },
-    # Added Tool: Task 6 Extension (Find all paths between two stations)
     {
         "name": "find_all_paths",
         "description": (
@@ -466,10 +466,6 @@ def _execute_tool(
             )
 
         elif tool_name == "find_all_paths":
-            # try:
-            #     limit_val = int(params.get("limit", 5))
-            # except (ValueError, TypeError):
-            #     limit_val = 5
 
             result = query_all_paths_between(
                 origin_id=params["origin_id"],
@@ -701,7 +697,6 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. 宣告新舊路由工具的所有關鍵字
     _has_all = "all" in _lower or "every" in _lower or "list" in _lower
     _has_path_keyword = "path" in _lower or "route" in _lower or "option" in _lower
     _is_asking_all_paths = _has_all and _has_path_keyword
@@ -710,25 +705,21 @@ JSON:"""
                        "best route", "how to get", "directions from", "route from", "route to",
                        "get from", "travel from", "way from", "path from"}
     
-    # 這裡加上限制：如果是查詢「所有路徑」，就不要判定為普通單一 route
     _is_route = (
         (any(kw in _lower for kw in _route_triggers) or (_two_stations and "route" in _lower))
         and not _is_asking_all_paths
     )
 
-    # 條件 A: 查詢「所有路徑/多個選項」（新工具 1）
     if _is_asking_all_paths and _two_stations and not _tool_selected("find_all_paths", "origin_id", "destination_id"):
         _fallback("find_all_paths",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "limit": 5},
                   "all paths query")
 
-    # 條件 B: 查詢「車站連通性/直接連通/下一站」（新工具 2）
     elif any(kw in _lower for kw in {"connections", "next stops", "direct lines", "connect to"}) and len(_station_ids) == 1 and not _tool_selected("get_station_connections", "station_id"):
         _fallback("get_station_connections",
                   {"station_id": _station_ids[0].upper()},
                   "station connections query")
 
-    # 條件 C: 原本的單一路徑防呆（舊工具）
     elif _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
         _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
         _fallback("find_route",

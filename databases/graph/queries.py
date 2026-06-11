@@ -441,7 +441,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     return result_list
 
 
-# ── TASK 6: STATION CONNECTIONS ───────────────────────────────────────────────────────
+# ── STATION CONNECTIONS ───────────────────────────────────────────────────────
 
 def query_station_connections(station_id: str) -> list[dict]:
     """
@@ -500,12 +500,11 @@ def query_all_paths_between(
     origin_id: str,
     destination_id: str,
     network: str = "auto",
-    # limit: int = 5,
 ) -> list[dict]:
     """
     Find all possible paths between two stations, sorted by travel time.
     """
-    limit = 5  # For now, we can keep a default limit to prevent excessive results
+    limit = 5  
     if origin_id == destination_id:
         return []
     
