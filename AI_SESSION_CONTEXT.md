@@ -79,7 +79,8 @@ CREATE TABLE user_credentials (
 
 -- Stations
 CREATE TABLE metro_stations (
-    station_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
     is_interchange_metro BOOLEAN,
     is_interchange_national_rail BOOLEAN,
@@ -96,7 +97,8 @@ CREATE TABLE metro_station_lines (
 );
 
 CREATE TABLE national_rail_stations (
-    station_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
     is_interchange_national_rail BOOLEAN,
     is_interchange_metro BOOLEAN,
@@ -114,7 +116,8 @@ CREATE TABLE national_rail_station_lines (
 
 -- Schedules
 CREATE TABLE metro_schedules (
-    schedule_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) UNIQUE NOT NULL,
     line VARCHAR(10),
     direction VARCHAR(20),
     origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
@@ -139,7 +142,8 @@ CREATE TABLE metro_schedule_stops (
 );
 
 CREATE TABLE national_rail_schedules (
-    schedule_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) UNIQUE NOT NULL,
     line VARCHAR(10),
     service_type VARCHAR(20),
     direction VARCHAR(20),
@@ -165,7 +169,8 @@ CREATE TABLE national_rail_schedule_stops (
 );
 
 CREATE TABLE national_rail_seat_layouts (
-    layout_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    layout_id VARCHAR(20) UNIQUE NOT NULL,
     schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
     coaches JSONB,
     deleted_at TIMESTAMPTZ
@@ -173,7 +178,8 @@ CREATE TABLE national_rail_seat_layouts (
 
 -- Bookings, Trips, Payments, Feedback
 CREATE TABLE national_rail_bookings (
-    booking_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    booking_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE RESTRICT,
     origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
@@ -193,7 +199,8 @@ CREATE TABLE national_rail_bookings (
 );
 
 CREATE TABLE metro_trips (
-    trip_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    trip_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id) ON DELETE RESTRICT,
     origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
@@ -210,7 +217,8 @@ CREATE TABLE metro_trips (
 );
 
 CREATE TABLE payments (
-    payment_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    payment_id VARCHAR(20) UNIQUE NOT NULL,
     national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
     metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     amount_usd NUMERIC(10,2),
@@ -221,7 +229,8 @@ CREATE TABLE payments (
 );
 
 CREATE TABLE feedback (
-    feedback_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    feedback_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
     metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
@@ -296,7 +305,7 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
 - [x] Schema design:
   - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
   - **Decision:** Added `id SERIAL PRIMARY KEY` to `users` table, while keeping `user_id` as `UNIQUE NOT NULL`. Chose Auto-Increment over UUID v7. **Why:** Auto-increment (`SERIAL`) was chosen over UUID v7 because it provides native, sequential ID generation without relying on external Python packages or PostgreSQL extensions (like `pg_uuidv7`). It also offers better index performance and lower storage overhead (4 bytes vs 16 bytes). Foreign keys continue to safely reference the unique `user_id`.
-  - **Decision:** Natural Keys (e.g. `station_id VARCHAR(20) PRIMARY KEY`) are kept as PKs for transit entities like stations and schedules. **Why:** Simplifies foreign key relations and data seeding.
+
   - **Decision:** Soft Delete via `deleted_at TIMESTAMP`. **Why:** Required by business rules.
   - **Decision:** `user_credentials` table decoupled from `users` with `UNIQUE(user_id)`. **Why:** Better security isolation, compliant with rules, and enforces one credential record per user so credential seeding is idempotent.
   - **Decision:** Removed explicit `salt` column from `user_credentials`. **Why:** We are using `argon2id` which automatically generates a CSPRNG salt and embeds it directly in the hash string (MCF format). A separate salt column is redundant and unused.
@@ -305,6 +314,7 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
   - **Decision:** Use `TIMESTAMPTZ` for all datetimes. **Why:** Required by grading criteria.
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
+  - **Decision:** Refactored all tables to use Surrogate Keys (`id SERIAL PRIMARY KEY`) instead of VARCHAR primary keys, while keeping original business identifiers (e.g. `station_id`) as `UNIQUE NOT NULL`. **Why:** (1) **Surrogate vs Natural**: An integer primary key significantly improves B-tree index efficiency compared to wide VARCHAR keys, and decoupling the internal identity from external business identifiers prevents cascading updates if a business ID ever changes. (2) **SERIAL vs UUID**: We chose Auto-Increment (`SERIAL`) over UUIDs because it provides native, sequential ID generation without relying on PostgreSQL extensions (like `uuid-ossp`). It also offers much better index locality and lower storage overhead (4 bytes vs 16 bytes per row), which is optimal for our single-node architecture where distributed ID generation (the main advantage of UUIDs) is unnecessary.
 - [x] Graph schema:
   - **Decision:** Static Topology Graph with multi-labels (`:Station:MetroStation`). **Why:** Allows flexible global queries across the entire network while keeping the schema simple.
   - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_WITH]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for Dijkstra shortest-path algorithms.
