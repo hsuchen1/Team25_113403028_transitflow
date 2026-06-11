@@ -204,10 +204,13 @@ TOOLS = [
             "Get all available departure times for a national rail schedule. "
             "Call this AFTER check_national_rail_availability to show the user "
             "which specific train times they can board. The user must select a "
-            "departure time before making a booking."
+            "departure time before making a booking. If boarding_station_id is "
+            "provided, each result also includes an ESTIMATED arrival time at that "
+            "station — present this to the user clearly labeled as an estimate."
         ),
         "parameters": {
             "schedule_id": {"type": "string", "description": "e.g. NR_SCH01"},
+            "boarding_station_id": {"type": "string", "description": "Optional. The station the user will board at, e.g. NR03. Used to estimate arrival time at that station."},
         },
         "required": ["schedule_id"],
     },
@@ -296,7 +299,7 @@ TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
 check_national_rail_availability(origin_id, destination_id, travel_date?)
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
-get_departure_times(schedule_id)
+get_departure_times(schedule_id, boarding_station_id?)  # boarding_station_id adds an ESTIMATED arrival time at that station
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
 get_available_seats(schedule_id, travel_date, fare_class)

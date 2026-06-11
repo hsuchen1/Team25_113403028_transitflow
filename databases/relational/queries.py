@@ -445,15 +445,22 @@ def query_payment_info(booking_id: str) -> Optional[dict]:
 
 # ── DEPARTURE TIMES ──────────────────────────────────────────────────────────
 
-def query_departure_times(schedule_id: str) -> list[dict]:
+def query_departure_times(schedule_id: str, boarding_station_id: Optional[str] = None) -> list[dict]:
     """
     Return all valid departure times for a national rail schedule.
     Departure time is defined as the time the train departs from the schedule's
     origin station (first stop). Times are generated from first_train_time to
     last_train_time at frequency_min intervals.
 
+    # TASK 6 EXTENSION: if boarding_station_id is given, also compute an
+    # ESTIMATED arrival time at that station (departure_time + travel_time_from_origin_min).
+    # This is an estimate derived from schedule data, not a guaranteed real-time arrival.
+
     Args:
         schedule_id: e.g. "NR_SCH01"
+        boarding_station_id: optional station the user will board at; if provided
+            and present on this schedule's stop list, each entry also includes
+            estimated_arrival_at_boarding_station and a note marking it as estimated.
 
     Returns:
         List of dicts with departure_time (HH:MM string) and schedule metadata.
@@ -472,8 +479,22 @@ def query_departure_times(schedule_id: str) -> list[dict]:
             cur.execute(sql, (schedule_id,))
             row = cur.fetchone()
 
-    if row is None:
-        return []
+            if row is None:
+                return []
+
+            travel_time_from_origin_min = None
+            if boarding_station_id:
+                cur.execute(
+                    """
+                    SELECT travel_time_from_origin_min
+                    FROM national_rail_schedule_stops
+                    WHERE schedule_id = %s AND station_id = %s
+                    """,
+                    (schedule_id, boarding_station_id),
+                )
+                stop_row = cur.fetchone()
+                if stop_row is not None:
+                    travel_time_from_origin_min = stop_row["travel_time_from_origin_min"]
 
     first = datetime.strptime(str(row["first_train_time"]), "%H:%M:%S")
     last  = datetime.strptime(str(row["last_train_time"]),  "%H:%M:%S")
@@ -482,13 +503,21 @@ def query_departure_times(schedule_id: str) -> list[dict]:
     times = []
     current = first
     while current <= last:
-        times.append({
+        entry = {
             "departure_time": current.strftime("%H:%M"),
             "schedule_id":    row["schedule_id"],
             "line":           row["line"],
             "service_type":   row["service_type"],
             "direction":      row["direction"],
-        })
+        }
+        if travel_time_from_origin_min is not None:
+            estimated = current + timedelta(minutes=travel_time_from_origin_min)
+            entry["estimated_arrival_at_boarding_station"] = estimated.strftime("%H:%M")
+            entry["note"] = (
+                "estimated_arrival_at_boarding_station is an ESTIMATE based on the "
+                "schedule's travel time from the origin station; actual arrival may vary."
+            )
+        times.append(entry)
         current += timedelta(minutes=freq)
 
     return times
@@ -667,19 +696,92 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
     """
     Cancel a national rail booking owned by the given user.
 
-    Calculates the refund amount according to the booking's service type:
-      - Normal service: RF001 windows (100% / 75% / 50% / 0%)
-      - Express service: RF002 windows (100% / 50% / 0%)
+    Calculates the refund amount according to the booking's service type
+    and how many hours remain before the scheduled departure:
+      - Normal service (RF001):  >=48h 100% (no fee) / 24-48h 75% ($0.50) /
+                                  2-24h 50% ($0.50) / <2h or past 0% (no fee)
+      - Express service (RF002): >=48h 100% ($1.00) / 24-48h 50% ($1.00) /
+                                  <24h or past 0% (no fee)
 
     Args:
         booking_id: e.g. "BK001"
         user_id:    must match the booking's user_id
 
     Returns:
-        (True, result_dict)  with refund_amount_usd and policy note
-        (False, error_msg)
+        (True, result_dict)  with refund_amount_usd and policy info
+        (False, error_msg)   if the booking does not exist, does not belong
+                              to this user, or is already cancelled
     """
-    raise NotImplementedError("TODO: implement after designing your schema")
+    from datetime import datetime
+
+    conn = psycopg2.connect(PG_DSN)
+    try:
+        conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT b.booking_id, b.status, b.travel_date, b.departure_time,
+                       b.amount_usd, s.service_type
+                FROM national_rail_bookings b
+                JOIN national_rail_schedules s ON s.schedule_id = b.schedule_id
+                WHERE b.booking_id = %s AND b.user_id = %s
+                FOR UPDATE
+                """,
+                (booking_id, user_id),
+            )
+            booking = cur.fetchone()
+
+            if booking is None:
+                return False, "Booking not found."
+
+            if booking["status"] == "cancelled":
+                return False, "Booking is already cancelled."
+
+            departure_dt = datetime.combine(booking["travel_date"], booking["departure_time"])
+            hours_before = (departure_dt - datetime.now()).total_seconds() / 3600
+
+            if booking["service_type"] == "express":
+                policy_id = "RF002"
+                if hours_before >= 48:
+                    refund_percent, admin_fee = 100, 1.00
+                elif hours_before >= 24:
+                    refund_percent, admin_fee = 50, 1.00
+                else:
+                    refund_percent, admin_fee = 0, 0.00
+            else:
+                policy_id = "RF001"
+                if hours_before >= 48:
+                    refund_percent, admin_fee = 100, 0.00
+                elif hours_before >= 24:
+                    refund_percent, admin_fee = 75, 0.50
+                elif hours_before >= 2:
+                    refund_percent, admin_fee = 50, 0.50
+                else:
+                    refund_percent, admin_fee = 0, 0.00
+
+            amount = float(booking["amount_usd"])
+            refund_amount = max(round(amount * refund_percent / 100 - admin_fee, 2), 0.0)
+
+            cur.execute(
+                "UPDATE national_rail_bookings SET status = 'cancelled' WHERE booking_id = %s",
+                (booking_id,),
+            )
+
+        conn.commit()
+        return True, {
+            "booking_id": booking_id,
+            "status": "cancelled",
+            "policy_id": policy_id,
+            "hours_before_departure": round(hours_before, 2),
+            "refund_percent": refund_percent,
+            "admin_fee_usd": admin_fee,
+            "refund_amount_usd": refund_amount,
+        }
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────
