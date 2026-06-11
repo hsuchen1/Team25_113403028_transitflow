@@ -125,12 +125,16 @@ TOOLS = [
         "description": (
             "Check available national rail trains and services between two stations. "
             "Use for any question about what trains run, schedules, timetables, or availability. "
-            "Returns schedules, service types, fare classes, and seat occupancy."
+            "Returns schedules, service types, fare classes, and seat occupancy. "
+            "available_seats is only a per-departure figure if departure_time is given "
+            "(pick one via get_departure_times); otherwise it is a less precise "
+            "schedule+date-wide approximation."
         ),
         "parameters": {
             "origin_id":      {"type": "string", "description": "National rail station ID e.g. NR01"},
             "destination_id": {"type": "string", "description": "National rail station ID e.g. NR05"},
             "travel_date":    {"type": "string", "description": "YYYY-MM-DD (optional — omit for general info)"},
+            "departure_time": {"type": "string", "description": "HH:MM (optional — from get_departure_times; scopes available_seats to that specific train)"},
         },
         "required": ["origin_id", "destination_id"],
     },
@@ -189,12 +193,15 @@ TOOLS = [
         "name": "get_available_seats",
         "description": (
             "Show available seats on a national rail service for a given date and fare class. "
-            "Always call this before making a first-class booking, or when the user wants to select a seat."
+            "Always call this before making a first-class booking, or when the user wants to select a seat. "
+            "Pass departure_time (from get_departure_times) to scope results to that specific train; "
+            "otherwise seats are checked across the whole schedule+date (less precise)."
         ),
         "parameters": {
             "schedule_id":  {"type": "string", "description": "e.g. NR_SCH01"},
             "travel_date":  {"type": "string", "description": "YYYY-MM-DD"},
             "fare_class":   {"type": "string", "description": "standard or first"},
+            "departure_time": {"type": "string", "description": "HH:MM (optional — from get_departure_times; scopes seat check to that specific train)"},
         },
         "required": ["schedule_id", "travel_date", "fare_class"],
     },
@@ -297,12 +304,12 @@ TOOLS = [
 
 TOOLS_SCHEMA = """\
 find_route(origin_id, destination_id, optimise_by?)
-check_national_rail_availability(origin_id, destination_id, travel_date?)
+check_national_rail_availability(origin_id, destination_id, travel_date?, departure_time?)  # departure_time scopes available_seats to one specific train
 get_national_rail_fare(schedule_id, fare_class, stops_travelled)
 get_departure_times(schedule_id, boarding_station_id?)  # boarding_station_id adds an ESTIMATED arrival time at that station
 check_metro_availability(origin_id, destination_id)
 calculate_metro_fare(schedule_id, stops_travelled)
-get_available_seats(schedule_id, travel_date, fare_class)
+get_available_seats(schedule_id, travel_date, fare_class, departure_time?)  # departure_time scopes seat check to one specific train
 make_booking(schedule_id, origin_station_id, destination_station_id, travel_date, departure_time, fare_class, seat_id, ticket_type?)
 cancel_booking(booking_id)
 get_user_bookings()

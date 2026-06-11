@@ -73,16 +73,28 @@ def query_national_rail_availability(
     origin_id: str,
     destination_id: str,
     travel_date: Optional[str] = None,
+    departure_time: Optional[str] = None,
 ) -> list[dict]:
     """
     Return national rail schedules that serve both origin and destination stations
     in the correct order, along with seat occupancy for the requested travel date.
+
+    # TASK 6 EXTENSION: a schedule_id can run multiple departures per day (one
+    # every frequency_min), and each departure has its own independent seat pool.
+    # If departure_time is given (selected from get_departure_times),
+    # available_seats reflects that specific departure's occupancy. If omitted,
+    # available_seats falls back to a schedule+date-wide count (legacy
+    # behaviour — treats every departure of the day as one shared pool, which
+    # is an approximation, not the true per-train availability).
 
     Args:
         origin_id:       e.g. "NR01"
         destination_id:  e.g. "NR05"
         travel_date:     e.g. "2025-06-01" — used to filter by day and count bookings;
                          omit for general info (available_seats will be NULL).
+        departure_time:  optional, e.g. "07:00" — scopes available_seats to a
+                         single departure of the schedule. Ignored if travel_date
+                         is not also given.
 
     Returns:
         List of schedule dicts, each containing schedule_id, line, service_type,
@@ -98,7 +110,8 @@ def query_national_rail_availability(
 
     # available_seats subquery: total seats in layout minus confirmed/completed bookings
     # Only meaningful when travel_date is provided; returns NULL otherwise.
-    available_seats_expr = """
+    departure_filter = "AND b.departure_time = %s::time" if (travel_date and departure_time) else ""
+    available_seats_expr = f"""
         (
             SELECT (
                 -- Count total seats across all coaches in the layout
@@ -107,11 +120,13 @@ def query_national_rail_availability(
                      jsonb_array_elements(sl.coaches) AS coach
                 WHERE sl.schedule_id = s.schedule_id
             ) - (
-                -- Subtract seats already booked on the requested date
+                -- Subtract seats already booked on the requested date (and,
+                -- if departure_time is given, that specific departure only)
                 SELECT COUNT(*)
                 FROM national_rail_bookings b
                 WHERE b.schedule_id = s.schedule_id
                   AND b.travel_date = %s::date
+                  {departure_filter}
                   AND b.status != 'cancelled'
             )
         )
@@ -123,6 +138,8 @@ def query_national_rail_availability(
         # Filter schedules that operate on the requested day of week
         date_filter = f"AND s.operates_on ? '{day_str}'"
         params.insert(0, travel_date)  # for available_seats subquery
+        if departure_time:
+            params.insert(1, departure_time)  # for available_seats subquery
 
     sql = f"""
         SELECT
@@ -280,20 +297,32 @@ def query_available_seats(
     schedule_id: str,
     travel_date: str,
     fare_class: str,
+    departure_time: Optional[str] = None,
 ) -> list[dict]:
     """
     Return available seats for a national rail journey on a given date.
 
+    # TASK 6 EXTENSION: a schedule_id can run multiple departures per day
+    # (one every frequency_min), and each departure has its own independent
+    # seat pool. If departure_time is given, only bookings on that exact
+    # departure are excluded. If omitted, the check falls back to the legacy
+    # schedule+date-wide behaviour (less precise — treats every departure of
+    # the day as sharing one seat pool).
+
     Args:
-        schedule_id:  e.g. "NR_SCH01"
-        travel_date:  e.g. "2025-06-01"
-        fare_class:   "standard" or "first"
+        schedule_id:    e.g. "NR_SCH01"
+        travel_date:    e.g. "2025-06-01"
+        fare_class:     "standard" or "first"
+        departure_time: optional, e.g. "07:00" — selects the specific train
+                         (from get_departure_times) so seat availability is
+                         computed for that exact departure only.
 
     Returns:
         List of dicts: {seat_id, coach, row, column}.
         Empty list if no seats available or schedule has no layout.
     """
-    sql = """
+    departure_filter = "AND departure_time = %s::time" if departure_time else ""
+    sql = f"""
         SELECT
             seat ->> 'seat_id' AS seat_id,
             coach ->> 'coach'  AS coach,
@@ -305,18 +334,23 @@ def query_available_seats(
         WHERE sl.schedule_id = %s
           AND coach ->> 'fare_class' = %s
           AND seat ->> 'seat_id' NOT IN (
-              -- Exclude seats already booked on the requested date
+              -- Exclude seats already booked on this date (and, if given, this departure)
               SELECT seat_id
               FROM national_rail_bookings
               WHERE schedule_id = %s
                 AND travel_date = %s::date
+                {departure_filter}
                 AND status != 'cancelled'
           )
         ORDER BY (seat ->> 'row')::integer, seat ->> 'column'
     """
+    params = [schedule_id, fare_class, schedule_id, travel_date]
+    if departure_time:
+        params.append(departure_time)
+
     with _connect() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(sql, (schedule_id, fare_class, schedule_id, travel_date))
+            cur.execute(sql, params)
             return [dict(row) for row in cur.fetchall()]
 
 
@@ -558,9 +592,12 @@ def execute_booking(
     from datetime import datetime, timezone
     import random, string
 
-    # ── 1. Fetch schedule info (fare, stops, departure_time fallback) ──────────
+    # ── 1. Fetch schedule info (fare, stops, departure_time fallback/validation) ──
+    # TASK 6 EXTENSION: also fetch last_train_time, frequency_min, and operates_on
+    # so a caller-supplied departure_time can be validated against the real timetable.
     sql_schedule = """
-        SELECT s.first_train_time, s.fare_classes,
+        SELECT s.first_train_time, s.last_train_time, s.frequency_min, s.operates_on,
+               s.fare_classes,
                orig.stop_order AS orig_order,
                dest.stop_order AS dest_order
         FROM national_rail_schedules s
@@ -572,6 +609,10 @@ def execute_booking(
     """
 
     # ── 2. Auto-assign seat if "any" ───────────────────────────────────────────
+    # TASK 6 EXTENSION: a schedule_id + travel_date can have many physical trains
+    # (one every frequency_min), each with its own independent seat pool. The
+    # NOT IN subquery now also filters on departure_time so seats taken on a
+    # different departure of the same schedule/date are not treated as taken here.
     sql_available_seat = """
         SELECT seat ->> 'seat_id' AS seat_id
         FROM national_rail_seat_layouts sl,
@@ -582,7 +623,7 @@ def execute_booking(
           AND seat ->> 'seat_id' NOT IN (
               SELECT seat_id FROM national_rail_bookings
               WHERE schedule_id = %s AND travel_date = %s::date
-                AND status != 'cancelled'
+                AND departure_time = %s::time AND status != 'cancelled'
           )
         LIMIT 1
     """
@@ -617,11 +658,46 @@ def execute_booking(
             # Resolve departure_time: use provided value or fall back to first_train_time
             dep_time = departure_time if departure_time else str(sched["first_train_time"])[:5]
 
+            # ── Validate departure_time against the schedule's timetable ───────
+            # TASK 6 EXTENSION: execute_booking previously accepted any
+            # departure_time string. Now it must align with first_train_time +
+            # N * frequency_min and not exceed last_train_time — i.e. it must be
+            # one of the times query_departure_times would generate.
+            first_dt = datetime.strptime(str(sched["first_train_time"]), "%H:%M:%S")
+            last_dt = datetime.strptime(str(sched["last_train_time"]), "%H:%M:%S")
+            freq = sched["frequency_min"]
+
+            if departure_time:
+                try:
+                    dep_dt = datetime.strptime(departure_time, "%H:%M")
+                except ValueError:
+                    return False, "Invalid departure_time format; expected HH:MM."
+
+                if dep_dt < first_dt or dep_dt > last_dt:
+                    return False, (
+                        f"Invalid departure_time {departure_time}: schedule {schedule_id} "
+                        f"runs from {first_dt.strftime('%H:%M')} to {last_dt.strftime('%H:%M')}."
+                    )
+
+                elapsed_min = (dep_dt - first_dt).total_seconds() / 60
+                if elapsed_min % freq != 0:
+                    return False, (
+                        f"Invalid departure_time {departure_time}: does not align with "
+                        f"schedule {schedule_id}'s frequency ({freq}-minute intervals from "
+                        f"{first_dt.strftime('%H:%M')}). Use get_departure_times to see valid times."
+                    )
+
+            # ── Validate the schedule operates on the requested travel_date ────
+            travel_dow = datetime.strptime(travel_date, "%Y-%m-%d").strftime("%a").lower()
+            operates_on = sched["operates_on"]
+            if operates_on is not None and travel_dow not in operates_on:
+                return False, f"Schedule {schedule_id} does not operate on {travel_dow} ({travel_date})."
+
             # Resolve seat
             actual_seat_id = seat_id
             coach = None
             if seat_id.lower() == "any":
-                cur.execute(sql_available_seat, (schedule_id, fare_class, schedule_id, travel_date))
+                cur.execute(sql_available_seat, (schedule_id, fare_class, schedule_id, travel_date, dep_time))
                 seat_row = cur.fetchone()
                 if seat_row is None:
                     return False, "No available seats for this fare class."
@@ -648,14 +724,18 @@ def execute_booking(
             payment_id = _gen_payment_id()
             now = datetime.now(timezone.utc)
 
-            # Check seat not already taken
+            # Check seat not already taken on this specific departure
+            # TASK 6 EXTENSION: scoped to departure_time as well as schedule_id +
+            # travel_date, since a schedule can run multiple departures per day
+            # and each departure has its own independent seat pool.
             cur.execute("""
                 SELECT 1 FROM national_rail_bookings
                 WHERE schedule_id = %s AND travel_date = %s::date
+                  AND departure_time = %s::time
                   AND seat_id = %s AND status != 'cancelled'
-            """, (schedule_id, travel_date, actual_seat_id))
+            """, (schedule_id, travel_date, dep_time, actual_seat_id))
             if cur.fetchone():
-                return False, f"Seat {actual_seat_id} is already booked for this date."
+                return False, f"Seat {actual_seat_id} is already booked for this date and departure time."
 
             # Insert booking and payment atomically
             cur.execute(sql_insert_booking, (
