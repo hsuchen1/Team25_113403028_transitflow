@@ -58,6 +58,8 @@ from databases.graph.queries import (
     query_alternative_routes,
     query_interchange_path,
     query_delay_ripple,
+    query_station_connections,
+    query_all_paths_between,
 )
 
 
@@ -300,6 +302,30 @@ TOOLS = [
         },
         "required": ["station_id"],
     },
+    # Added Tool: Task 6 Extension (Find all paths between two stations)
+    {
+        "name": "find_all_paths",
+        "description": (
+            "Find ALL possible paths or options between two stations, sorted by travel time. "
+            "Use this when the user asks for 'all paths', 'alternative options', or 'list routes'."
+        ),
+        "parameters": {
+            "origin_id":      {"type": "string", "description": "Station ID e.g. MS01 or NR01"},
+            "destination_id": {"type": "string", "description": "Station ID e.g. MS09 or NR05"},
+            "network":        {"type": "string", "description": "metro, rail, or auto (default auto)"},
+            "limit":          {"type": "integer", "description": "Maximum number of paths to return (default 5)"}
+        },
+        "required": ["origin_id", "destination_id"],
+    },
+    # Added Tool: Task 6 Extension ( Station Connections lookup )
+    {
+        "name": "get_station_connections",
+        "description": "List all direct next-stop connections, relationship types, and travel lines from a specific station.",
+        "parameters": {
+            "station_id": {"type": "string", "description": "Station ID e.g. MS01 or NR03"}
+        },
+        "required": ["station_id"],
+    }
 ]
 
 TOOLS_SCHEMA = """\
@@ -315,7 +341,10 @@ cancel_booking(booking_id)
 get_user_bookings()
 search_policy(query)
 find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
-get_delay_ripple(station_id, hops?)"""
+get_delay_ripple(station_id, hops?)
+find_all_paths(origin_id, destination_id, network?, limit?)
+get_station_connections(station_id)
+"""
 
 
 # ── Agent logic ───────────────────────────────────────────────────────────────
@@ -467,6 +496,23 @@ def _execute_tool(
             result = query_delay_ripple(
                 delayed_station_id=params["station_id"],
                 hops=params.get("hops", 2),
+            )
+
+        elif tool_name == "find_all_paths":
+            # try:
+            #     limit_val = int(params.get("limit", 5))
+            # except (ValueError, TypeError):
+            #     limit_val = 5
+
+            result = query_all_paths_between(
+                origin_id=params["origin_id"],
+                destination_id=params["destination_id"],
+                network=params.get("network", "auto"),
+            )
+
+        elif tool_name == "get_station_connections":
+            result = query_station_connections(
+                station_id=params["station_id"],
             )
 
         else:
@@ -688,15 +734,35 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. Route / directions / path — also overrides wrong-tool selections
+    # 1. 宣告新舊路由工具的所有關鍵字
+    _has_all = "all" in _lower or "every" in _lower or "list" in _lower
+    _has_path_keyword = "path" in _lower or "route" in _lower or "option" in _lower
+    _is_asking_all_paths = _has_all and _has_path_keyword
+
     _route_triggers = {"fastest route", "quickest route", "shortest route", "cheapest route",
                        "best route", "how to get", "directions from", "route from", "route to",
                        "get from", "travel from", "way from", "path from"}
+    
+    # 這裡加上限制：如果是查詢「所有路徑」，就不要判定為普通單一 route
     _is_route = (
-        any(kw in _lower for kw in _route_triggers) or
-        (_two_stations and "route" in _lower)
+        (any(kw in _lower for kw in _route_triggers) or (_two_stations and "route" in _lower))
+        and not _is_asking_all_paths
     )
-    if _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
+
+    # 條件 A: 查詢「所有路徑/多個選項」（新工具 1）
+    if _is_asking_all_paths and _two_stations and not _tool_selected("find_all_paths", "origin_id", "destination_id"):
+        _fallback("find_all_paths",
+                  {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "limit": 5},
+                  "all paths query")
+
+    # 條件 B: 查詢「車站連通性/直接連通/下一站」（新工具 2）
+    elif any(kw in _lower for kw in {"connections", "next stops", "direct lines", "connect to"}) and len(_station_ids) == 1 and not _tool_selected("get_station_connections", "station_id"):
+        _fallback("get_station_connections",
+                  {"station_id": _station_ids[0].upper()},
+                  "station connections query")
+
+    # 條件 C: 原本的單一路徑防呆（舊工具）
+    elif _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
         _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
         _fallback("find_route",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
@@ -765,7 +831,8 @@ JSON:"""
     # compose the final answer.  The normalisation call replaces hand-crafted
     # per-tool formatters: any tool a student adds works automatically.
     _DB_KEYWORDS = {"booking", "ticket", "schedule", "fare", "route", "seat",
-                    "train", "metro", "journey", "trip", "history", "reservation"}
+                    "train", "metro", "journey", "trip", "history", "reservation",
+                    "connections", "paths"}
     if tool_results:
         data_block = "\n\n".join(
             f"[{tr['tool']}]\n{_normalise_result(tr['tool'], tr['result'])}"

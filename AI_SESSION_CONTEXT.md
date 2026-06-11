@@ -82,7 +82,8 @@ CREATE TABLE user_credentials (
 
 -- Stations
 CREATE TABLE metro_stations (
-    station_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
     is_interchange_metro BOOLEAN,
     is_interchange_national_rail BOOLEAN,
@@ -99,7 +100,8 @@ CREATE TABLE metro_station_lines (
 );
 
 CREATE TABLE national_rail_stations (
-    station_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    station_id VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100) NOT NULL,
     is_interchange_national_rail BOOLEAN,
     is_interchange_metro BOOLEAN,
@@ -117,7 +119,8 @@ CREATE TABLE national_rail_station_lines (
 
 -- Schedules
 CREATE TABLE metro_schedules (
-    schedule_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) UNIQUE NOT NULL,
     line VARCHAR(10),
     direction VARCHAR(20),
     origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
@@ -142,7 +145,8 @@ CREATE TABLE metro_schedule_stops (
 );
 
 CREATE TABLE national_rail_schedules (
-    schedule_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    schedule_id VARCHAR(20) UNIQUE NOT NULL,
     line VARCHAR(10),
     service_type VARCHAR(20),
     direction VARCHAR(20),
@@ -168,7 +172,8 @@ CREATE TABLE national_rail_schedule_stops (
 );
 
 CREATE TABLE national_rail_seat_layouts (
-    layout_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    layout_id VARCHAR(20) UNIQUE NOT NULL,
     schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE CASCADE,
     coaches JSONB,
     deleted_at TIMESTAMPTZ
@@ -176,7 +181,8 @@ CREATE TABLE national_rail_seat_layouts (
 
 -- Bookings, Trips, Payments, Feedback
 CREATE TABLE national_rail_bookings (
-    booking_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    booking_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     schedule_id VARCHAR(20) REFERENCES national_rail_schedules(schedule_id) ON DELETE RESTRICT,
     origin_station_id VARCHAR(20) REFERENCES national_rail_stations(station_id) ON DELETE RESTRICT,
@@ -196,7 +202,8 @@ CREATE TABLE national_rail_bookings (
 );
 
 CREATE TABLE metro_trips (
-    trip_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    trip_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     schedule_id VARCHAR(20) REFERENCES metro_schedules(schedule_id) ON DELETE RESTRICT,
     origin_station_id VARCHAR(20) REFERENCES metro_stations(station_id) ON DELETE RESTRICT,
@@ -213,7 +220,8 @@ CREATE TABLE metro_trips (
 );
 
 CREATE TABLE payments (
-    payment_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    payment_id VARCHAR(20) UNIQUE NOT NULL,
     national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
     metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     amount_usd NUMERIC(10,2),
@@ -224,7 +232,8 @@ CREATE TABLE payments (
 );
 
 CREATE TABLE feedback (
-    feedback_id VARCHAR(20) PRIMARY KEY,
+    id SERIAL PRIMARY KEY,
+    feedback_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
     national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
     metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
@@ -289,6 +298,7 @@ def query_alternative_routes(origin_id, destination_id, avoid_station_id, networ
 def query_interchange_path(origin_id: str, destination_id: str) -> dict: ...
 def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]: ...
 def query_station_connections(station_id: str) -> list[dict]: ...
+def query_all_paths_between(origin_id: str, destination_id: str, network: str = "auto", limit: int = 5) -> list[dict]: ...
 ```
 
 ## Team Decisions Log
