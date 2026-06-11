@@ -1,4 +1,6 @@
 """
+# TASK 6 EXTENSION: Added execute_submit_feedback for bonus feature.
+# TASK 6 EXTENSION: Added execute_submit_feedback for bonus feature.
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
 This module handles all queries to PostgreSQL.
@@ -866,6 +868,66 @@ def execute_cancellation(booking_id: str, user_id: str) -> tuple[bool, dict | st
         return False, str(e)
     finally:
         conn.close()
+
+
+def execute_submit_feedback(
+    user_id: str,
+    booking_id: str,
+    rating: int,
+    comment: str
+) -> tuple[bool, dict | str]:
+    """
+    # TASK 6 EXTENSION: Submit user feedback and rating for a trip.
+    
+    Args:
+        user_id: The user's ID
+        booking_id: The booking ID (can be national rail BK... or metro MT...)
+        rating: Integer 1-5
+        comment: User's feedback text
+        
+    Returns:
+        (True, dict) with feedback details on success.
+        (False, error_msg) on failure.
+    """
+    if not isinstance(rating, int) or not (1 <= rating <= 5):
+        return False, "Rating must be an integer between 1 and 5."
+
+    is_metro = booking_id.startswith("MT")
+    national_rail_id = None if is_metro else booking_id
+    metro_trip_id = booking_id if is_metro else None
+
+    sql_insert = """
+        INSERT INTO feedback (id, feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating, comment, submitted_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+    """
+
+    conn = psycopg2.connect(PG_DSN)
+    try:
+        conn.autocommit = False
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # Generate ID for feedback using the sequence
+            feedback_seq, feedback_id = _gen_id(cur, "feedback", "FB")
+            
+            cur.execute(sql_insert, (
+                feedback_seq, feedback_id, user_id, national_rail_id, metro_trip_id, rating, comment
+            ))
+            
+        conn.commit()
+        return True, {
+            "feedback_id": feedback_id,
+            "booking_id": booking_id,
+            "rating": rating,
+            "comment": comment
+        }
+    except psycopg2.errors.ForeignKeyViolation:
+        conn.rollback()
+        return False, f"Invalid booking ID '{booking_id}' or User ID '{user_id}'."
+    except Exception as e:
+        conn.rollback()
+        return False, str(e)
+    finally:
+        conn.close()
+
 
 
 # ── AUTHENTICATION QUERIES ────────────────────────────────────────────────────

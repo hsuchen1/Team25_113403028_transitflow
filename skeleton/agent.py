@@ -51,6 +51,7 @@ from databases.relational.queries import (
     execute_cancellation,
     query_policy_vector_search,
     query_departure_times,
+    execute_submit_feedback,
 )
 from databases.graph.queries import (
     query_shortest_route,
@@ -325,6 +326,17 @@ TOOLS = [
             "station_id": {"type": "string", "description": "Station ID e.g. MS01 or NR03"}
         },
         "required": ["station_id"],
+    },
+    # Added Tool: Task 6 Extension ( Submit user feedback )
+    {
+        "name": "submit_feedback",
+        "description": "Submit a rating and comment for a specific booking. User must be logged in.",
+        "parameters": {
+            "booking_id": {"type": "string", "description": "The booking_id (e.g. BK...) or trip_id (e.g. MT...) to provide feedback for."},
+            "rating": {"type": "integer", "description": "A rating between 1 and 5."},
+            "comment": {"type": "string", "description": "The user's text feedback."}
+        },
+        "required": ["booking_id", "rating", "comment"],
     }
 ]
 
@@ -344,6 +356,7 @@ find_alternative_routes(origin_id, destination_id, avoid_station_id, network?)
 get_delay_ripple(station_id, hops?)
 find_all_paths(origin_id, destination_id, network?, limit?)
 get_station_connections(station_id)
+submit_feedback(booking_id, rating, comment)
 """
 
 
@@ -440,6 +453,20 @@ def _execute_tool(
             ok, data = execute_cancellation(
                 booking_id=params["booking_id"],
                 user_id=profile["user_id"],
+            )
+            result = data if ok else {"error": data}
+
+        elif tool_name == "submit_feedback":
+            if not current_user_email:
+                return json.dumps({"error": "You must be logged in to submit feedback."})
+            profile = query_user_profile(current_user_email)
+            if not profile:
+                return json.dumps({"error": "User profile not found."})
+            ok, data = execute_submit_feedback(
+                user_id=profile["user_id"],
+                booking_id=params["booking_id"],
+                rating=params["rating"],
+                comment=params["comment"],
             )
             result = data if ok else {"error": data}
 
