@@ -1,7 +1,9 @@
 """
-# TASK 6 EXTENSION: departure_time booking flow
-    Added query_departure_times tool so users can select a specific train departure
-    before booking, enabling correct departure_time to be stored in national_rail_bookings.
+# TASK 6 EXTENSION: departure_time booking flow + feedback write path
+    Added query_departure_times so users can select a specific train departure before
+    booking (correct departure_time stored in national_rail_bookings, per-departure
+    seat pools, timetable/operates_on validation in execute_booking), and added
+    execute_submit_feedback (upsert into the feedback table).
 TransitFlow — PostgreSQL / Relational Database Layer
 =====================================================
 This module handles all queries to PostgreSQL.
@@ -877,43 +879,59 @@ def execute_submit_feedback(
 ) -> tuple[bool, dict | str]:
     """
     # TASK 6 EXTENSION: Submit user feedback and rating for a trip.
-    
+
+    Uses INSERT … ON CONFLICT … DO UPDATE (upsert) so that a second submission
+    for the same booking updates the existing row instead of creating a duplicate.
+    The returned feedback_id is always the canonical ID of the surviving row
+    (the original one on update, a new one on first insert).
+
     Args:
         user_id: The user's ID
         booking_id: The booking ID (can be national rail BK... or metro MT...)
-        rating: Integer 1-5
+        rating: Integer 1-5 (strings that parse as integers are accepted)
         comment: User's feedback text
-        
+
     Returns:
         (True, dict) with feedback details on success.
         (False, error_msg) on failure.
     """
+    if isinstance(rating, str):
+        try:
+            rating = int(rating)
+        except ValueError:
+            return False, "Rating must be an integer between 1 and 5."
     if not isinstance(rating, int) or not (1 <= rating <= 5):
         return False, "Rating must be an integer between 1 and 5."
 
     is_metro = booking_id.startswith("MT")
     national_rail_id = None if is_metro else booking_id
-    metro_trip_id = booking_id if is_metro else None
+    metro_trip_id_val = booking_id if is_metro else None
+    conflict_col = "metro_trip_id" if is_metro else "national_rail_booking_id"
 
-    sql_insert = """
+    sql_upsert = f"""
         INSERT INTO feedback (id, feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating, comment, submitted_at)
         VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+        ON CONFLICT ({conflict_col}) DO UPDATE
+            SET rating = EXCLUDED.rating,
+                comment = EXCLUDED.comment,
+                submitted_at = CURRENT_TIMESTAMP
+        RETURNING feedback_id
     """
 
     conn = psycopg2.connect(PG_DSN)
     try:
         conn.autocommit = False
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            # Generate ID for feedback using the sequence
             feedback_seq, feedback_id = _gen_id(cur, "feedback", "FB")
-            
-            cur.execute(sql_insert, (
-                feedback_seq, feedback_id, user_id, national_rail_id, metro_trip_id, rating, comment
+            cur.execute(sql_upsert, (
+                feedback_seq, feedback_id, user_id, national_rail_id, metro_trip_id_val, rating, comment
             ))
-            
+            row = cur.fetchone()
+            actual_feedback_id = row["feedback_id"]  # original ID if updated, new ID if inserted
+
         conn.commit()
         return True, {
-            "feedback_id": feedback_id,
+            "feedback_id": actual_feedback_id,
             "booking_id": booking_id,
             "rating": rating,
             "comment": comment

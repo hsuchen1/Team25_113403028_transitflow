@@ -128,8 +128,8 @@ erDiagram
     PAYMENTS {
         int id PK
         varchar payment_id UK
-        varchar national_rail_booking_id FK
-        varchar metro_trip_id FK
+        varchar national_rail_booking_id FK "UK, nullable (XOR)"
+        varchar metro_trip_id FK "UK, nullable (XOR)"
         numeric amount_usd
         varchar method
         varchar status
@@ -138,8 +138,8 @@ erDiagram
         int id PK
         varchar feedback_id UK
         varchar user_id FK
-        varchar national_rail_booking_id FK
-        varchar metro_trip_id FK
+        varchar national_rail_booking_id FK "UK, nullable (XOR)"
+        varchar metro_trip_id FK "UK, nullable (XOR)"
         int rating
         text comment
     }
@@ -172,8 +172,8 @@ erDiagram
 
     NATIONAL_RAIL_BOOKINGS ||--o| PAYMENTS : "1 is paid by 0..1"
     METRO_TRIPS ||--o| PAYMENTS : "1 is paid by 0..1"
-    NATIONAL_RAIL_BOOKINGS ||--o{ FEEDBACK : "1 receives 0..N"
-    METRO_TRIPS ||--o{ FEEDBACK : "1 receives 0..N"
+    NATIONAL_RAIL_BOOKINGS ||--o| FEEDBACK : "1 receives 0..1"
+    METRO_TRIPS ||--o| FEEDBACK : "1 receives 0..1"
 ```
 
 **Notes on cardinality:**
@@ -190,8 +190,11 @@ erDiagram
   booking/trip — which is what makes the 0..1 cardinality drawn above a real schema
   property rather than an application convention (PostgreSQL `UNIQUE` ignores NULLs,
   so the many NULL rows on each side do not collide). `feedback` carries the same
-  XOR `CHECK` but deliberately no FK `UNIQUE`, since a booking may receive multiple
-  feedback entries (0..N).
+  XOR `CHECK` and, like `payments`, a `UNIQUE` constraint on each FK — enforcing
+  at most one feedback row per booking/trip (0..1). `execute_submit_feedback` uses
+  `ON CONFLICT … DO UPDATE` (upsert) so a repeat submission updates the existing
+  rating and comment rather than inserting a duplicate; the returned `feedback_id`
+  is always the canonical ID of the surviving row.
 - The metro↔rail interchange pairing (`metro_stations.interchange_national_rail_station_id`
   / `national_rail_stations.interchange_metro_station_id`) is drawn as 0..1 ↔ 0..1
   above but is deliberately **not** declared as FK constraints in the schema: the two
@@ -261,7 +264,7 @@ updated on their own. `operates_on` is a small, fixed-size, schedule-attached li
 applies `s.operates_on ? 'mon'` to keep only schedules operating on the requested
 day, and `execute_booking` re-validates the same rule — but the JSONB `?`
 containment operator answers that predicate directly on the schedule row, with no
-join and (at this scale: 12 schedule rows) no index needed; a normalised
+join and (at this scale: 8 national-rail schedule rows) no index needed; a normalised
 `schedule_operating_days` junction table would add a join to every availability
 query for no measurable benefit. `fare_classes` is schedule-scoped: every fare lookup already has the
 `schedule_id` and extracts one nested object from one row. `coaches` is a nested
@@ -706,7 +709,9 @@ wiring required to reach them — no UI-only changes.
 ### 7.2 Database changes
 
 No new tables were needed — the point of the extension is making existing schema
-columns (`departure_time`, the `feedback` table) actually live. Changes by layer:
+columns (`departure_time`, the `feedback` table) actually live. One schema change
+was made in support: `UNIQUE` constraints on both `feedback` FKs (see (d) below).
+Changes by layer:
 
 **(a) Departure-time generation — `query_departure_times(schedule_id, boarding_station_id?)`** (new, `databases/relational/queries.py`)
 
@@ -760,18 +765,39 @@ WHERE schedule_id = %s                     WHERE schedule_id = %s
 as an *optional* parameter: omitted, they fall back to the legacy day-wide
 approximation, so all original grading scenarios (B1, B5) keep working unchanged.
 
-**(d) Feedback write path — `execute_submit_feedback(user_id, booking_id, rating, comment)`** (new)
+**(d) Feedback write path — `execute_submit_feedback(user_id, booking_id, rating, comment)`** (new, plus one schema change)
 
-Validates `rating ∈ 1..5`, routes the booking reference to the correct polymorphic
-FK by prefix (`BK…` → `national_rail_booking_id`, `MT…` → `metro_trip_id`), derives
-`feedback_id` from the `id SERIAL` sequence via `_gen_id` (e.g. `FB021`), and maps
-FK violations to a friendly `(False, message)`:
+To make repeat submissions update-in-place rather than accumulate duplicates, the
+`feedback` FKs gained `UNIQUE` constraints in `databases/relational/schema.sql`
+(changing the booking→feedback cardinality from 0..N to 0..1, reflected in
+Section 1's ERD):
+
+```sql
+national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+metro_trip_id            VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+```
+
+The function validates `rating ∈ 1..5` (coercing numeric strings like `'5'`, which
+small LLMs pass), routes the booking reference to the correct polymorphic FK by
+prefix (`BK…` → `national_rail_booking_id`, `MT…` → `metro_trip_id`), derives a
+candidate `feedback_id` via `_gen_id`, and performs an upsert — returning the
+canonical `feedback_id` of the surviving row (original ID on update, new ID on
+first insert):
 
 ```sql
 INSERT INTO feedback (id, feedback_id, user_id, national_rail_booking_id,
                       metro_trip_id, rating, comment, submitted_at)
 VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+ON CONFLICT (national_rail_booking_id | metro_trip_id) DO UPDATE
+    SET rating = EXCLUDED.rating,
+        comment = EXCLUDED.comment,
+        submitted_at = CURRENT_TIMESTAMP
+RETURNING feedback_id
 ```
+
+(The `|` is shorthand: the actual arbiter column is selected in Python by the
+booking-ID prefix before the statement is built, since `ON CONFLICT` accepts only
+one column list.)
 
 **(e) Graph — `query_all_paths_between` and `query_station_connections`**
 (`databases/graph/queries.py`)
@@ -846,17 +872,20 @@ ORDER BY departure_time;
 (False, 'Schedule NR_SCH05 does not operate on sat (2026-06-20).')    # express = Mon–Fri only
 ```
 
-**4. Feedback end-to-end:**
+**4. Feedback end-to-end (including the upsert path):**
 
 ```python
 >>> execute_submit_feedback("RU01", "BK001", 5, "Smooth ride, on time.")
-(True, {'feedback_id': 'FB021', 'booking_id': 'BK001', 'rating': 5, ...})
+(True, {'feedback_id': 'FB031', 'booking_id': 'BK001', 'rating': 5, ...})
+>>> execute_submit_feedback("RU01", "BK001", 4, "Actually, one stop was slow.")
+(True, {'feedback_id': 'FB031', 'booking_id': 'BK001', 'rating': 4, ...})
+# ↑ same feedback_id: the second call hit ON CONFLICT and updated FB031 in place
 ```
 
 ```sql
 SELECT feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating
-FROM feedback WHERE feedback_id = 'FB021';
---  FB021 | RU01 | BK001 | NULL | 5      ← prefix routed to the rail FK; metro FK NULL
+FROM feedback WHERE national_rail_booking_id = 'BK001';
+--  FB031 | RU01 | BK001 | NULL | 4   ← one row only; prefix routed to the rail FK
 ```
 
 **5. All paths with transfer analysis (graph):**
@@ -878,14 +907,15 @@ the seed data values, e.g. NR_SCH01 = 06:00–22:30 / 30 min / fare 2.50 + 1.50�
 1. **Direct function tests (Python shell):** the transcripts in 7.3 — departure
    generation count (34 for NR_SCH01), the same-seat/different-train triple from
    example 2, both validation rejections (off-grid time; express service on a
-   Saturday), and the feedback insert returning `FB021` consistent with 20 seeded
-   feedback rows.
+   Saturday), and the feedback upsert returning `FB031` consistent with 30 seeded
+   feedback rows — including the repeat-submission case where the second call
+   returns the *same* `FB031` with the updated rating instead of a duplicate row.
 2. **Direct DB verification (pgAdmin):** the two `SELECT`s shown in 7.3 confirm
    (a) two confirmed bookings share `seat_id='B05'` on the same schedule+date with
    different `departure_time`s, and (b) the feedback row landed with the correct
    polymorphic FK populated and the other `NULL`. The paired `payments` row
-   (`PM021`/`PM022`) was also confirmed present for each new booking — the atomic
-   booking+payment transaction was not regressed.
+   (`PM041`/`PM042`, following the 40 seeded payments) was also confirmed present
+   for each new booking — the atomic booking+payment transaction was not regressed.
 3. **Chat UI (Gradio, debug panel on):** the conversational flow *"trains NR01 to
    NR05 on 2026-06-22" → "what times can I board?" → "book the 07:30, standard,
    any seat"* triggers `check_national_rail_availability` → `get_departure_times` →

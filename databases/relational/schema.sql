@@ -1,5 +1,8 @@
 -- ============================================================
 --  TransitFlow PostgreSQL Schema
+--  # TASK 6 EXTENSION: UNIQUE constraints added to both feedback FK columns
+--  (national_rail_booking_id, metro_trip_id) to support the upsert write path
+--  in execute_submit_feedback — see TASK6.md and DESIGN_DOC.md Section 7.2(d).
 --  Seed data is loaded separately by: python skeleton/seed_postgres.py
 --
 --  TWO ROLES:
@@ -216,15 +219,17 @@ CREATE TABLE feedback (
     id SERIAL PRIMARY KEY,
     feedback_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+    national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     rating INTEGER,
     comment TEXT,
     submitted_at TIMESTAMPTZ,
     deleted_at TIMESTAMPTZ,
     -- Same XOR rule as payments: feedback targets a rail booking or a metro trip,
-    -- never both/neither. No UNIQUE on the FKs here — unlike payments, a booking
-    -- may legitimately receive multiple feedback entries (0..N in the ERD).
+    -- never both/neither. UNIQUE on each FK enforces at most one feedback row per
+    -- booking/trip (0..1). execute_submit_feedback uses ON CONFLICT DO UPDATE
+    -- (upsert) so a repeat submission updates the existing row rather than
+    -- inserting a duplicate — "submit feedback" effectively acts as "create or replace".
     CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)
 );
 
