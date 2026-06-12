@@ -987,5 +987,28 @@ at the database level (pgAdmin), and end-to-end through the chat UI.
   without `departure_time` keep working since all new parameters are optional on
   the read paths.
 
-*(Screenshots of the pgAdmin outputs and the Gradio debug-panel tool log are
-attached in the EEClass submission alongside this document.)*
+**Screenshots:**
+
+![Screenshot 1](https://i.ibb.co/C50ZTPZ6/image.png)
+
+![Screenshot 2](https://i.ibb.co/gM529Zy0/image.png)
+
+![Screenshot 3](https://i.ibb.co/Wv34nkts/image.png)
+
+![Screenshot 4](https://i.ibb.co/wNp3vKXN/image.png)
+
+![Screenshot 5](https://i.ibb.co/97KZJK8/image.png)
+
+![Screenshot 6](https://i.ibb.co/Kz029x9C/image.png)
+
+![Screenshot 7](https://i.ibb.co/wZjShRwj/image.png)
+
+![Screenshot 8](https://i.ibb.co/wZb4McYq/image.png)
+
+![Screenshot 9](https://i.ibb.co/Q7TQRjQH/image.png)
+
+![Screenshot 10](https://i.ibb.co/4R7frmXV/image.png)
+
+![Screenshot 11](https://i.ibb.co/1tLsXc0G/image.png)
+
+![Screenshot 12](https://i.ibb.co/Jw0Z77sS/image.png)
