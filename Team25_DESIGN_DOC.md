@@ -904,11 +904,9 @@ FROM feedback WHERE metro_trip_id = 'MT001';
 
 **Motivation.** The original graph layer only supported shortest-path queries.
 A user asking "what are all the ways I can get from MS01 to NR06?" had no tool to call. Real journey
-planners surface alternatives so passengers can choose by number of transfers, total
+planners surface alternatives so passengers can choose by number of transfers, total time, or line preference — the single shortest path is not always the preferred one.
 
-time, or line preference — the single shortest path is not always the preferred one.
-
-**What changed.** Two new functions in `databases/graph/queries.py`:
+**What changed.** A new function in `databases/graph/queries.py`:
 
 - **`query_all_paths_between(origin, destination)`** — uses APOC `allSimplePaths`
   (capped at 5 results to prevent path explosion), totals `travel_time_min` per
