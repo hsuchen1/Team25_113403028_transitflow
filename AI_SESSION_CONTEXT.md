@@ -253,15 +253,18 @@ CREATE TABLE feedback (
 ## Agreed Graph Schema
 
 Node labels:
+
 - `MetroStation` (Specific label for metro stations)
 - `NationalRailStation` (Specific label for national rail stations)
 
 Relationship types:
+
 - `[:METRO_LINK]` (Properties: `line`, `travel_time_min`, `cost_usd`)
 - `[:RAIL_LINK]` (Properties: `line`, `travel_time_min`, `cost_standard_usd`, `cost_first_usd`)
 - `[:INTERCHANGE_TO]` (Properties: `travel_time_min` e.g. 5)
 
 Key properties:
+
 - Node: `station_id` (Unique constraint), `name`, `lines`, `is_interchange_metro`, `is_interchange_national_rail`
 - Edge: `travel_time_min` (Used as weights for fastest route routing), and `cost_*_usd` properties (Used as weights for cheapest route routing)
 
@@ -310,7 +313,7 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
 
 <!-- Add entries as you make decisions. Format: "Decision: X. Why: Y." -->
 
-- [x] Schema design:
+- [X] Schema design:
   - **Decision:** Split `full_name` into `first_name` and `last_name` in `users` table. **Why:** Matches `register_user` API signature, improves search/sort by surname, and allows personalized UI greetings.
   - **Decision:** Added `id SERIAL PRIMARY KEY` to `users` table, while keeping `user_id` as `UNIQUE NOT NULL`. Chose Auto-Increment over UUID v7. **Why:** Auto-increment (`SERIAL`) was chosen over UUID v7 because it provides native, sequential ID generation without relying on external Python packages or PostgreSQL extensions (like `pg_uuidv7`). It also offers better index performance and lower storage overhead (4 bytes vs 16 bytes). Foreign keys continue to safely reference the unique `user_id`.
   - **Decision:** Refactored all tables to use Surrogate Keys (`id SERIAL PRIMARY KEY`) instead of VARCHAR primary keys, while keeping original business identifiers (e.g. `station_id`) as `UNIQUE NOT NULL`. **Why:** (1) **Surrogate vs Natural**: An integer primary key significantly improves B-tree index efficiency compared to wide VARCHAR keys, and decoupling the internal identity from external business identifiers prevents cascading updates if a business ID ever changes. (2) **SERIAL vs UUID**: We chose Auto-Increment (`SERIAL`) over UUIDs because it provides native, sequential ID generation without relying on PostgreSQL extensions (like `uuid-ossp`). It also offers much better index locality and lower storage overhead (4 bytes vs 16 bytes per row), which is optimal for our single-node architecture where distributed ID generation (the main advantage of UUIDs) is unnecessary.
@@ -326,38 +329,62 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
   - **Decision:** Added `UNIQUE` to both FK columns of `feedback` and changed `execute_submit_feedback` to upsert (`ON CONFLICT … DO UPDATE`). **Why:** Without UNIQUE, a repeat `submit_feedback` call (e.g. user wanting to change their rating) inserted a second row for the same booking, leaving two conflicting feedback records. Upsert makes the tool idempotent — feedback cardinality is now 0..1 per booking/trip (updated in ERD and Section 1 notes). Requires `docker compose down -v` + full re-seed after pulling.
   - **Decision:** Hardened the polymorphic FK pattern with DB-level constraints: `CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)` on both `payments` and `feedback` (exactly one target, never both/neither), plus `UNIQUE` on each payments FK (at most one payment per booking/trip; PostgreSQL UNIQUE ignores NULLs). `feedback` deliberately has no FK UNIQUE — a booking may receive multiple feedback rows. **Why:** These rules were previously enforced only by the `execute_booking`/seeder write paths; moving them into the schema makes them hold for any writer. Side effect: combined with `ON DELETE SET NULL`, a hard DELETE of a referenced booking/trip is now blocked by the CHECK — intended, since the business rule mandates soft delete and financial records must not be orphaned. Verified `payments.json` (40 rows) has no duplicate `booking_id` and `feedback.json` has no missing `booking_id`, so seeding is unaffected. Requires `docker compose down -v` + full re-seed after pulling.
   - **Decision:** Changed `date_of_birth DATE` to `year_of_birth SMALLINT` in `users` table. **Why:** The registration form (`register_user`) only collects year of birth; storing a full DATE would require fabricating month/day, which is semantically incorrect. Seeding extracts the year from the mock data's full date string.
-- [x] Agent modifications (Task 6 Extension):
+- [X] Agent modifications (Task 6 Extension):
   - **Decision:** Modified `skeleton/agent.py` to add `get_departure_times` tool and `departure_time` parameter to `make_booking`. **Why:** The original agent had no way to show users available train departure times or pass a selected time to `execute_booking`. Without this, `departure_time` in `national_rail_bookings` could only be filled with `first_train_time` (inaccurate). The extension adds `query_departure_times` to `queries.py` and wires it through the agent so users can select the exact train they want before booking.
   - **Decision:** `query_departure_times` accepts an optional `boarding_station_id`. When provided, each result also includes `estimated_arrival_at_boarding_station` (computed as `departure_time + travel_time_from_origin_min` for that stop) plus a `note` explicitly labeling it as an ESTIMATE. **Why:** `departure_time` represents when the train leaves the schedule's origin station, not when it reaches the user's boarding station — without this, a user boarding mid-route would be shown a misleading time. The agent's `get_departure_times` tool description instructs the LLM to present this value as an estimate.
   - **Decision:** Each `schedule_id` actually represents many independent daily departures (`first_train_time` + N × `frequency_min`, up to `last_train_time`), each with its own seat pool — but seat-occupancy logic was previously scoped only to `(schedule_id, travel_date)`, treating all departures of a day as one shared pool. Fixed across `queries.py`: `execute_booking`'s seat-conflict check and auto-assign query (`sql_available_seat`) now also filter on `departure_time`; `query_available_seats` and `query_national_rail_availability` gained an optional `departure_time` parameter that scopes their seat-availability counts to one specific departure (omitting it falls back to the old, less-precise schedule+date-wide approximation). **Why:** Without this, two different trains running on the same schedule_id/date could incorrectly be treated as fighting over the same seats, and `available_seats` counts could under-report capacity.
   - **Decision:** `execute_booking` now validates `departure_time` (if supplied) against the schedule's actual timetable: must be `>= first_train_time` and `<= last_train_time`, and `(departure_time - first_train_time) % frequency_min == 0` (i.e. must be a time `query_departure_times` would generate). Also validates the requested `travel_date`'s day-of-week is in `operates_on`. Both checks return `False` with an explanatory error message if violated. **Why:** Previously any string could be passed as `departure_time`, allowing bookings for trains that don't actually run (wrong time-of-day or wrong day of week), which would corrupt the per-departure seat-pool logic above.
   - **Decision:** Propagated optional `departure_time` parameter to `agent.py`'s `check_national_rail_availability` and `get_available_seats` tool definitions (TOOLS list + TOOLS_SCHEMA), with descriptions explaining it scopes `available_seats`/seat results to one specific train (selected via `get_departure_times`). `_execute_tool` dispatcher needed no change since both calls already use `**params` passthrough. **Why:** Required so the LLM can actually supply the new parameter; otherwise the `queries.py` fix would be unreachable from the agent.
   - **Decision:** Added an explicit instruction block to the final-answer prompt (Step 3, when `get_user_bookings` is among the tool results) telling the LLM to keep `national_rail` and `metro` results in separate groups with their own fields, never invent/null-fill missing fields by merging the two schemas, and never claim booking history is viewable without login. **Why:** Small Ollama models (e.g. llama3.2:1b) were observed merging the two differently-shaped lists into one, fabricating a fake booking entry full of `None`s for the metro trip, and incorrectly stating no login was required — even though `query_user_bookings`/`_execute_tool` already correctly require a logged-in user and return correctly separated, correctly-shaped data.
-- [x] Graph schema:
+- [X] Graph schema:
   - **Decision:** Static Topology Graph with specific network labels (`:MetroStation`, `:NationalRailStation`). Removed the generic `:Station` label. **Why:** Simplifies the seed script. Both node types can easily be matched together where necessary.
   - **Decision:** Separate relationships `[:METRO_LINK]`, `[:RAIL_LINK]`, `[:INTERCHANGE_TO]`. **Why:** Optimizes Neo4j traversal based on relationship type and allows easy weighting (`travel_time_min`) for APOC Dijkstra shortest-path algorithms.
   - **Decision:** Unified `transfer_time_min` into `travel_time_min` for `[:INTERCHANGE_TO]`. **Why:** This allows `apoc.algo.allSimplePaths` and `dijkstra` to sum a single common property (`travel_time_min`) across all relationship types.
   - **Decision:** Pre-calculated fare costs are stored directly as edge weights (`cost_usd` on `METRO_LINK`, `cost_standard_usd`/`cost_first_usd` on `RAIL_LINK`). **Why:** Allows `query_cheapest_route` to find the cheapest path using Dijkstra based on precomputed cost weights instead of trying to dynamically calculate table-based fares within the graph.
 
-## Prompts That Worked
+## Prompts That Worked (translated by AI)
 
-<!-- Share prompts that produced good output so teammates can reuse them. -->
+`<!-- Share prompts that produced good output so teammates can reuse them. -->`
 
 ### Schema design prompt that worked:
+
+**Context:** Original schema used business identifiers (e.g. `booking_id`, `user_id`) directly as primary keys. We wanted shorter, sequential IDs (`BK021`, `FB031`, ...) for new rows without rewriting every FK reference across `queries.py` and the seed scripts.
+
+**Prompt:**
+
 ```
-TODO — add a prompt here after your schema design workshop
+Refactor schema.sql so every table gets `id SERIAL PRIMARY KEY`, while keeping the
+existing business identifiers (e.g. booking_id, user_id, station_id) as
+`UNIQUE NOT NULL` columns. All foreign keys should keep pointing at the business
+identifiers so that queries.py and the seed scripts don't need to change. Add a
+`_gen_id(cur, table, prefix)` helper that derives the next business ID from
+`nextval(pg_get_serial_sequence(table, 'id'))` (e.g. "BK021", "FB031").
 ```
 
+**Outcome:** AI added `id SERIAL PRIMARY KEY` to every table, kept all existing FKs untouched (pointing at the UNIQUE business keys), and wrote `_gen_id(cur, table, prefix)` using `pg_get_serial_sequence`. This became the basis for `execute_booking` and `execute_submit_feedback` generating new IDs (BK021, FB031, etc.) without any schema-wide FK rewrite. We verified against the seed data (20 bookings → next is BK021).
+
 ### Query implementation prompt that worked:
+
+**Context:** `execute_booking` originally treated an entire day's schedule (e.g. `NR_SCH01`, 34 departures/day) as one shared seat pool, so two different trains on the same schedule/date would incorrectly compete for the same seat.
+
+**Prompt:**
+
 ```
-TODO — add after implementing your first function
+A schedule like NR_SCH01 runs every 30 minutes from 06:00 to 22:30 — that's 34
+separate trains per day. Walk through what execute_booking currently does if user A
+books seat B05 on the 07:00 departure and user B then books seat B05 on the 08:00
+departure of the same schedule and date. Is there a bug, and if so, fix the seat
+availability and booking queries so each departure_time has its own seat pool.
 ```
+
+**Outcome:** AI confirmed the bug — the original seat-conflict query only filtered on `schedule_id` + `travel_date`, so booking B05 on the 07:00 train would block B05 on the 08:00 train of the same schedule even though they're different trains. AI fixed `query_available_seats`, `query_national_rail_availability`, and `execute_booking`'s seat-conflict/auto-assign query to also filter on `departure_time`, and added timetable validation (departure_time must align with `first_train_time`/`frequency_min`/`operates_on`). This became the core of the Task 6 "per-departure seat pool" fix documented in TASK6.md and DESIGN_DOC.md Section 5.
 
 —————資料庫專題要注意—————
 
 # TransitFlow 專案開發與資料庫設計規範
 
 ## 📌 一、核心設計與商業邏輯 (Business Logic & Core Design)
+
 - **商業規則**：務必徹底確認並遵循專案的 Business Rules。
 - **刪除機制**：必須利用軟刪除 (Soft Delete) 處理，嚴禁直接從資料庫實體抹除資料。
 - **權限控管**：使用者在「未登入」狀態下，絕對無法撈取任何訂票紀錄。
@@ -365,6 +392,7 @@ TODO — add after implementing your first function
 - **驗收標準**：重點在於檢視「回傳內容」是否正確。若因 AI 助理能力不足導致錯誤可忽視。
 
 ## 🔒 二、資安與密碼防護 (Security & Credential Management)
+
 - **演算法限制**：嚴禁明碼儲存。Hash 演算法禁止使用 MD5、SHA 系列，強烈建議使用 **argon2id**。
 - **獨立資料表**：密碼嚴禁存放在 `user` 資料表中，必須抽離至獨立資料表（如 `user_credentials`）。
   - **欄位規範**：包含 `c_id` (Surrogate Key / 代理鍵)、`u_id` (Foreign Key / 外鍵)、hash、salt。
@@ -374,6 +402,7 @@ TODO — add after implementing your first function
 - **帳號救援**：必須實作設定「秘密問題 (Secret Question)」與答案的比對機制。
 
 ## 📁 三、專案檔案配合與實作細節 (Implementation & Configurations)
+
 - **架構優先 (Schema-First)**：先設計好資料表。務必確保 `schema.sql`、`seed_postgres.py` 與 `registered_users.json` 三者的欄位與邏輯完美配合。
 - **向量資料庫 (Vector DB)**：`seed_vectors.py` 已經實作完畢，開發時無需修改（目前架構為一個文件對應一個向量）。
 - **逾時設定 (Timeout)**：系統預設為 300 秒，如需修改可至 `skeleton/config.py` 中調整。
