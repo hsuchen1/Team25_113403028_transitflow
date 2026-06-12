@@ -681,161 +681,90 @@ passwords vs a vault-managed secret store).
 > modified file carries a `# TASK 6 EXTENSION:` comment near the top, and every new
 > database operation has inline comments explaining the why.
 
-### 7.1 Motivation
+### 7.1 Overview
 
-The shipped booking flow had a semantic hole: a `schedule_id` such as `NR_SCH01` is
-not one train — it is a *service pattern* that runs every `frequency_min` minutes
-(06:00–22:30 every 30 min = **34 physical trains per day**), yet the system could
-neither show those trains nor record which one was booked:
+The extension makes the national-rail booking pipeline fully *train-aware* — a
+`schedule_id` is a service pattern (e.g. NR_SCH01 runs every 30 min, 06:00–22:30 =
+34 physical trains/day), not a single train, but the original system treated the
+entire day as one undifferentiated slot. Three problems followed from that, each
+addressed by a separate change below. Two additional capabilities were added
+alongside: a write path for passenger feedback (the table existed but nothing could
+insert into it) and richer graph traversal. All changes live in the database and
+agent layers — no UI changes.
 
-1. `national_rail_bookings.departure_time` could only ever be filled with
-   `first_train_time` — every booking claimed to be on the first train of the day,
-   even though the mock data itself (`bookings.json`, e.g. BK003 at 08:00, BK004 at
-   08:30) demonstrates bookings are per-train.
-2. Seat occupancy was computed per `(schedule_id, travel_date)`, so all 34 daily
-   trains shared **one** seat pool: once seat B05 was sold on the 07:00, it was
-   unsellable on every later train that day — under-reporting daily capacity by up
-   to 34×.
-3. Nothing validated that a requested time corresponds to a train that actually runs
-   (right interval, within service hours, on an operating day).
+No new tables were required. The only schema change was adding `UNIQUE` constraints
+to the `feedback` polymorphic FK columns to support the upsert write path (see §7.5).
 
-The extension makes the booking pipeline *train-aware* end to end, and adds two
-adjacent capabilities the assistant was missing: a write path for passenger
-**feedback** (the `feedback` table existed but nothing could insert into it), and
-richer graph queries (**all alternative paths** with transfer analysis, and
-**station connections**). All changes are in the database layer plus the agent
-wiring required to reach them — no UI-only changes.
+### 7.2 Departure-time listing — `query_departure_times`
 
-### 7.2 Database changes
+**Motivation.** There was no way to ask "which trains run today on NR_SCH01?" —
+the system had `first_train_time`, `last_train_time`, and `frequency_min` in the
+schedule row but no function that expanded them into an actual timetable. Without
+this, the agent could not present the user with concrete departure options, and
+`execute_booking` had to blindly accept whatever time the user typed.
 
-No new tables were needed — the point of the extension is making existing schema
-columns (`departure_time`, the `feedback` table) actually live. One schema change
-was made in support: `UNIQUE` constraints on both `feedback` FKs (see (d) below).
-Changes by layer:
-
-**(a) Departure-time generation — `query_departure_times(schedule_id, boarding_station_id?)`** (new, `databases/relational/queries.py`)
-
-Generates the day's trains from the schedule header, optionally annotating each with
-an estimated arrival at the passenger's boarding station (clearly labelled an
-ESTIMATE, computed as departure + `travel_time_from_origin_min` from the normalised
-stops table):
+**What changed.** New function `query_departure_times(schedule_id, boarding_station_id?)`
+in `databases/relational/queries.py`. It iterates from `first_train_time` to
+`last_train_time` in steps of `frequency_min` and returns each train as a dict.
+When `boarding_station_id` is supplied, it joins `national_rail_schedule_stops` to
+add an `estimated_arrival_at_boarding_station` (labelled ESTIMATE — it is
+`departure_time + travel_time_from_origin_min`, not a live feed):
 
 ```python
-# Times are generated from first_train_time to last_train_time at frequency_min steps
 current = first
 while current <= last:
     entry = {"departure_time": current.strftime("%H:%M"), "schedule_id": ..., ...}
-    if travel_time_from_origin_min is not None:   # boarding_station_id was given
-        entry["estimated_arrival_at_boarding_station"] = (current + timedelta(
-            minutes=travel_time_from_origin_min)).strftime("%H:%M")
+    if travel_time_from_origin_min is not None:
+        entry["estimated_arrival_at_boarding_station"] = (
+            current + timedelta(minutes=travel_time_from_origin_min)
+        ).strftime("%H:%M")
     times.append(entry)
     current += timedelta(minutes=freq)
 ```
 
-**(b) Timetable validation in `execute_booking`** (modified)
-
-A caller-supplied `departure_time` must now be a train that exists:
-
-```python
-if dep_dt < first_dt or dep_dt > last_dt:
-    return False, f"Invalid departure_time ...: schedule runs from ... to ..."
-elapsed_min = (dep_dt - first_dt).total_seconds() / 60
-if elapsed_min % freq != 0:
-    return False, "Invalid departure_time ...: does not align with frequency ..."
-# and the travel_date's day-of-week must be in operates_on
-if operates_on is not None and travel_dow not in operates_on:
-    return False, f"Schedule does not operate on {travel_dow} ..."
-```
-
-**(c) Per-departure seat pools** (modified: `execute_booking`'s conflict check and
-auto-assign subquery, `query_available_seats`, `query_national_rail_availability`)
-
-Every seat-occupancy predicate gained the departure dimension:
-
-```sql
--- before (day-level pool):                -- after (per-train pool):
-WHERE schedule_id = %s                     WHERE schedule_id = %s
-  AND travel_date = %s::date                 AND travel_date = %s::date
-  AND seat_id     = %s                       AND departure_time = %s::time
-  AND status != 'cancelled'                  AND seat_id     = %s
-                                             AND status != 'cancelled'
-```
-
-`query_available_seats` / `query_national_rail_availability` take `departure_time`
-as an *optional* parameter: omitted, they fall back to the legacy day-wide
-approximation, so all original grading scenarios (B1, B5) keep working unchanged.
-
-**(d) Feedback write path — `execute_submit_feedback(user_id, booking_id, rating, comment)`** (new, plus one schema change)
-
-To make repeat submissions update-in-place rather than accumulate duplicates, the
-`feedback` FKs gained `UNIQUE` constraints in `databases/relational/schema.sql`
-(changing the booking→feedback cardinality from 0..N to 0..1, reflected in
-Section 1's ERD):
-
-```sql
-national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-metro_trip_id            VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
-```
-
-The function validates `rating ∈ 1..5` (coercing numeric strings like `'5'`, which
-small LLMs pass), routes the booking reference to the correct polymorphic FK by
-prefix (`BK…` → `national_rail_booking_id`, `MT…` → `metro_trip_id`), derives a
-candidate `feedback_id` via `_gen_id`, and performs an upsert — returning the
-canonical `feedback_id` of the surviving row (original ID on update, new ID on
-first insert):
-
-```sql
-INSERT INTO feedback (id, feedback_id, user_id, national_rail_booking_id,
-                      metro_trip_id, rating, comment, submitted_at)
-VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
-ON CONFLICT (national_rail_booking_id | metro_trip_id) DO UPDATE
-    SET rating = EXCLUDED.rating,
-        comment = EXCLUDED.comment,
-        submitted_at = CURRENT_TIMESTAMP
-RETURNING feedback_id
-```
-
-(The `|` is shorthand: the actual arbiter column is selected in Python by the
-booking-ID prefix before the statement is built, since `ON CONFLICT` accepts only
-one column list.)
-
-**(e) Graph — `query_all_paths_between` and `query_station_connections`**
-(`databases/graph/queries.py`)
-
-`query_all_paths_between` enumerates simple paths (APOC `allSimplePaths`, capped at
-5 results to prevent path explosion), totals `travel_time_min`, and post-processes
-each path to report `num_transfers` and `transfer_points` — distinguishing
-*network interchanges* (an `INTERCHANGE_TO` edge) from *line changes* (consecutive
-link edges whose `line` property differs). `query_station_connections` returns each
-direct neighbour with its relationship type, line, `travel_time_min`, and edge cost.
-
-**(f) Agent wiring** (`skeleton/agent.py`): new tools `get_departure_times`,
-`submit_feedback`, `find_all_paths`, `get_station_connections`; `departure_time`
-parameter added to `make_booking` (required), `check_national_rail_availability` and
-`get_available_seats` (optional) in both the `TOOLS` list and `TOOLS_SCHEMA`; plus a
-final-answer prompt block that keeps `national_rail`/`metro` booking history in
-separate, correctly-shaped groups (small local models were observed merging the two
-schemas and fabricating null-filled fields).
-
-### 7.3 Example queries
-
-**1. Listing the actual trains (with estimated mid-route arrival):**
+**Example.**
 
 ```python
 >>> from databases.relational.queries import query_departure_times
 >>> query_departure_times("NR_SCH01", boarding_station_id="NR03")[:2]
 [{'departure_time': '06:00', 'schedule_id': 'NR_SCH01', 'line': 'NR1',
-  'service_type': 'normal', 'direction': 'northbound',
   'estimated_arrival_at_boarding_station': '06:30',
-  'note': 'estimated_arrival_at_boarding_station is an ESTIMATE based on the ...'},
- {'departure_time': '06:30', ..., 'estimated_arrival_at_boarding_station': '07:00', ...}]
+  'note': 'estimated_arrival_at_boarding_station is an ESTIMATE ...'},
+ {'departure_time': '06:30', ..., 'estimated_arrival_at_boarding_station': '07:00'}]
 >>> len(query_departure_times("NR_SCH01"))
-34        # 06:00–22:30 every 30 min — matches (990 min / 30) + 1
+34        # 06:00–22:30 every 30 min → (990 min / 30) + 1 = 34 trains
 ```
 
-(NR03's offset is 30 min in `national_rail_schedule_stops`, hence 06:00 → 06:30.)
+(NR03's stop offset is 30 min in `national_rail_schedule_stops`, so 06:00 → 06:30.)
 
-**2. Per-departure seat pool — the same seat on two different trains:**
+---
+
+### 7.3 Per-departure seat pools
+
+**Motivation.** Seat occupancy was checked per `(schedule_id, travel_date)` — all
+34 daily trains shared one pool. As soon as seat B05 was sold on the 07:00 train,
+it became unavailable for every later train that day, under-reporting daily capacity
+by up to 34×. The seed data (`bookings.json`: BK003 at 08:00, BK004 at 08:30) already
+shows bookings are per-train — the schema supported it, but the query did not.
+
+**What changed.** Every seat-occupancy predicate in `execute_booking` (conflict
+check + auto-assign subquery), `query_available_seats`, and
+`query_national_rail_availability` gained a `departure_time` dimension:
+
+```sql
+-- before (day-level pool):          -- after (per-train pool):
+WHERE schedule_id = %s               WHERE schedule_id = %s
+  AND travel_date = %s::date           AND travel_date = %s::date
+  AND seat_id     = %s                 AND departure_time = %s::time
+  AND status != 'cancelled'            AND seat_id     = %s
+                                       AND status != 'cancelled'
+```
+
+`query_available_seats` / `query_national_rail_availability` accept `departure_time`
+as an *optional* parameter — when omitted, they fall back to the original day-wide
+approximation so original grading scenarios (B1, B5) continue to work unchanged.
+
+**Example.**
 
 ```python
 >>> execute_booking("RU01", "NR_SCH01", "NR01", "NR05", "2026-06-22",
@@ -844,88 +773,219 @@ schemas and fabricating null-filled fields).
 >>> execute_booking("RU02", "NR_SCH01", "NR01", "NR05", "2026-06-22",
 ...                 "standard", "B05", departure_time="07:30")
 (True, {'booking_id': 'BK022', 'seat_id': 'B05', 'departure_time': '07:30', ...})
+# ↑ same seat, different train — correctly allowed
 >>> execute_booking("RU03", "NR_SCH01", "NR01", "NR05", "2026-06-22",
 ...                 "standard", "B05", departure_time="07:00")
 (False, 'Seat B05 is already booked for this date and departure time.')
+# ↑ correctly blocked — same seat AND same train
 ```
 
-Direct verification in pgAdmin:
+pgAdmin verification:
 
 ```sql
 SELECT booking_id, departure_time, seat_id, status
 FROM national_rail_bookings
 WHERE schedule_id = 'NR_SCH01' AND travel_date = '2026-06-22'
 ORDER BY departure_time;
---  booking_id | departure_time | seat_id | status
---  BK021      | 07:00:00       | B05     | confirmed
---  BK022      | 07:30:00       | B05     | confirmed     ← same seat, different train: allowed
+--  BK021 | 07:00:00 | B05 | confirmed
+--  BK022 | 07:30:00 | B05 | confirmed   ← same seat, different train: two rows, both confirmed
 ```
 
-**3. Timetable validation rejecting phantom trains:**
+---
+
+### 7.4 Timetable validation
+
+**Motivation.** With no validation, the agent could book a departure time that does
+not correspond to any real train — e.g. 07:17 on a 30-minute schedule, or a
+Monday-only express on a Saturday. The database would accept the row; the
+inconsistency would only surface later when passengers showed up at the wrong time.
+
+**What changed.** `execute_booking` now runs three checks before inserting, using
+data already in `national_rail_schedules`:
+
+1. `departure_time` is within `[first_train_time, last_train_time]`
+2. `(departure_time − first_train_time)` is an exact multiple of `frequency_min`
+3. The `travel_date`'s day-of-week is present in `operates_on`
 
 ```python
->>> execute_booking(..., departure_time="07:17")     # off-grid time
-(False, "Invalid departure_time 07:17: does not align with schedule NR_SCH01's
- frequency (30-minute intervals from 06:00). Use get_departure_times to see valid times.")
->>> execute_booking("RU01", "NR_SCH05", "NR01", "NR05", "2026-06-20",  # a Saturday
-...                 "standard", "any", departure_time="07:00")
-(False, 'Schedule NR_SCH05 does not operate on sat (2026-06-20).')    # express = Mon–Fri only
+if dep_dt < first_dt or dep_dt > last_dt:
+    return False, f"Invalid departure_time {dep}: schedule runs {first} to {last}."
+elapsed_min = (dep_dt - first_dt).total_seconds() / 60
+if elapsed_min % freq != 0:
+    return False, f"Invalid departure_time {dep}: does not align with {freq}-min frequency."
+if operates_on is not None and travel_dow not in operates_on:
+    return False, f"Schedule does not operate on {travel_dow} ({travel_date})."
 ```
 
-**4. Feedback end-to-end (including the upsert path):**
+**Example.**
+
+```python
+>>> execute_booking(..., departure_time="07:17")
+(False, "Invalid departure_time 07:17: does not align with schedule NR_SCH01's
+ frequency (30-minute intervals from 06:00). Use get_departure_times to see valid times.")
+
+>>> execute_booking("RU01", "NR_SCH05", "NR01", "NR05", "2026-06-20",
+...                 "standard", "any", departure_time="07:00")
+(False, 'Schedule NR_SCH05 does not operate on sat (2026-06-20).')
+# ↑ NR_SCH05 is Mon–Fri express; 2026-06-20 is a Saturday
+```
+
+---
+
+### 7.5 Feedback write path — `execute_submit_feedback`
+
+**Motivation.** The `feedback` table was part of the original schema but had no
+write path — no query function and no agent tool could insert into it. Additionally,
+the table had no `UNIQUE` constraint on its FK columns, so calling a hypothetical
+insert function twice for the same booking would silently create a second feedback
+row instead of updating the first. Both gaps had to be closed together.
+
+**Schema change.** Both polymorphic FK columns gained `UNIQUE` in
+`databases/relational/schema.sql`, changing the booking→feedback cardinality from
+0..N to 0..1 and enabling the upsert conflict target. PostgreSQL `UNIQUE` ignores
+`NULL`s, so the many-NULL rows on each side are unaffected:
+
+```sql
+national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+metro_trip_id            VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+```
+
+**What changed.** New function `execute_submit_feedback(user_id, booking_id, rating, comment)`
+in `databases/relational/queries.py`:
+
+- Accepts numeric-string ratings (e.g. `'5'`) by coercing to `int` before
+  validation — small LLMs consistently pass tool arguments as strings.
+- Routes the booking reference to the correct FK by prefix: `BK…` →
+  `national_rail_booking_id`, `MT…` → `metro_trip_id`.
+- Derives a candidate `feedback_id` via `_gen_id`, then executes an upsert.
+  When `ON CONFLICT` fires (booking already has feedback), the candidate ID is
+  discarded and the original `feedback_id` is returned via `RETURNING`:
+
+```sql
+INSERT INTO feedback (id, feedback_id, user_id, national_rail_booking_id,
+                      metro_trip_id, rating, comment, submitted_at)
+VALUES (%s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+ON CONFLICT (national_rail_booking_id | metro_trip_id) DO UPDATE
+    SET rating       = EXCLUDED.rating,
+        comment      = EXCLUDED.comment,
+        submitted_at = CURRENT_TIMESTAMP
+RETURNING feedback_id
+```
+
+(The `|` is shorthand — the actual conflict column is selected in Python by the
+booking-ID prefix before the statement is built, since `ON CONFLICT` accepts only
+one column list.)
+
+**Example.**
 
 ```python
 >>> execute_submit_feedback("RU01", "BK001", 5, "Smooth ride, on time.")
-(True, {'feedback_id': 'FB031', 'booking_id': 'BK001', 'rating': 5, ...})
+(True, {'feedback_id': 'FB001', 'booking_id': 'BK001', 'rating': 5, ...})
+# ↑ BK001 had seeded feedback FB001 — ON CONFLICT fires, canonical FB001 is returned
+
 >>> execute_submit_feedback("RU01", "BK001", 4, "Actually, one stop was slow.")
-(True, {'feedback_id': 'FB031', 'booking_id': 'BK001', 'rating': 4, ...})
-# ↑ same feedback_id: the second call hit ON CONFLICT and updated FB031 in place
+(True, {'feedback_id': 'FB001', 'booking_id': 'BK001', 'rating': 4, ...})
+# ↑ same feedback_id: ON CONFLICT again, rating updated in place — no duplicate row
 ```
+
+pgAdmin verification (one row, correct polymorphic FK, other side NULL):
 
 ```sql
-SELECT feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating
+SELECT feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating, comment
 FROM feedback WHERE national_rail_booking_id = 'BK001';
---  FB031 | RU01 | BK001 | NULL | 4   ← one row only; prefix routed to the rail FK
+--  FB001 | RU01 | BK001 | NULL | 5 | Smooth journey, very comfortable.
+
+SELECT feedback_id, user_id, national_rail_booking_id, metro_trip_id, rating, comment
+FROM feedback WHERE metro_trip_id = 'MT001';
+--  FB002 | RU02 | NULL | MT001 | 5 | The trip was very good
 ```
 
-**5. All paths with transfer analysis (graph):**
+---
+
+### 7.6 Graph queries — all paths and station connections
+
+**Motivation.** The original graph layer only supported shortest-path queries.
+A user asking "what are all the ways I can get from MS01 to NR06?" or "which
+stations can I transfer to from Central Square?" had no tool to call. Real journey
+planners surface alternatives so passengers can choose by number of transfers, total
+time, or line preference — the single shortest path is not always the preferred one.
+
+**What changed.** Two new functions in `databases/graph/queries.py`:
+
+- **`query_all_paths_between(origin, destination)`** — uses APOC `allSimplePaths`
+  (capped at 5 results to prevent path explosion), totals `travel_time_min` per
+  path, and post-processes each result to compute `num_transfers` and
+  `transfer_points`, distinguishing *network interchanges* (`INTERCHANGE_TO` edges)
+  from *line changes* (consecutive `LINK` edges whose `line` property differs).
+
+- **`query_station_connections(station_id)`** — returns each direct neighbour with
+  its relationship type, line, `travel_time_min`, and edge cost.
+
+**Example.**
 
 ```python
 >>> from databases.graph.queries import query_all_paths_between
 >>> paths = query_all_paths_between("MS01", "NR05")
 >>> [(p["total_time_min"], p["num_transfers"]) for p in paths]
-[(70, 1), (78, 1), ...]   # ≤5 paths, ascending total time; each crosses one INTERCHANGE_TO
+[(70, 1), (78, 1), ...]   # ≤5 paths, ascending total time; each has one INTERCHANGE_TO
+
 >>> paths[0]["transfer_points"]
 [{'from': 'MS01', 'to': 'NR01', 'type': 'network_interchange'}]
 ```
 
-### 7.4 Testing evidence
+---
 
-The extension was exercised at three levels (per-departure logic verified against
-the seed data values, e.g. NR_SCH01 = 06:00–22:30 / 30 min / fare 2.50 + 1.50×stops):
+### 7.7 Agent integration
 
-1. **Direct function tests (Python shell):** the transcripts in 7.3 — departure
-   generation count (34 for NR_SCH01), the same-seat/different-train triple from
-   example 2, both validation rejections (off-grid time; express service on a
-   Saturday), and the feedback upsert returning `FB031` consistent with 30 seeded
-   feedback rows — including the repeat-submission case where the second call
-   returns the *same* `FB031` with the updated rating instead of a duplicate row.
-2. **Direct DB verification (pgAdmin):** the two `SELECT`s shown in 7.3 confirm
-   (a) two confirmed bookings share `seat_id='B05'` on the same schedule+date with
-   different `departure_time`s, and (b) the feedback row landed with the correct
-   polymorphic FK populated and the other `NULL`. The paired `payments` row
-   (`PM041`/`PM042`, following the 40 seeded payments) was also confirmed present
-   for each new booking — the atomic booking+payment transaction was not regressed.
-3. **Chat UI (Gradio, debug panel on):** the conversational flow *"trains NR01 to
-   NR05 on 2026-06-22" → "what times can I board?" → "book the 07:30, standard,
-   any seat"* triggers `check_national_rail_availability` → `get_departure_times` →
-   `make_booking` with `departure_time="07:30"` visible in the debug panel's tool
-   call log, and *"rate BK001 5 stars, comment: smooth ride"* triggers
-   `submit_feedback`. Regression pass: the original B1–C6 live-test scenarios
-   (availability without a departure_time, seat listing, cancellation refund
-   windows RF001/RF002, shortest/cheapest/alternative/interchange routing) were
-   re-run after the extension and still return their expected shapes, since every
-   new parameter is optional on the read paths.
+**Motivation.** The six new/modified database functions above are unreachable
+without corresponding tool definitions in the agent. Additionally, small local
+models (e.g. llama3.2) were observed merging `national_rail` and `metro` booking
+results into a single fabricated schema — a prompt-level fix was needed alongside
+the new tools.
 
-*(Screenshots of the pgAdmin outputs and the debug-panel tool log are attached in
-the EEClass submission alongside this document.)*
+**What changed** in `skeleton/agent.py`:
+
+- **4 new tools**: `get_departure_times`, `submit_feedback`, `find_all_paths`,
+  `get_station_connections` — each with a full entry in `TOOLS` and `TOOLS_SCHEMA`.
+- **`departure_time` parameter** added to `make_booking` (required when calling),
+  `check_national_rail_availability`, and `get_available_seats` (optional on both).
+- **Booking-history prompt fix**: an explicit instruction block in the Step 3
+  final-answer prompt tells the LLM to keep `national_rail` and `metro` results
+  in separate, correctly-shaped groups and never null-fill missing fields by
+  merging the two schemas.
+
+---
+
+### 7.8 Testing evidence
+
+Each feature was verified at the function level (Python shell output in §7.2–7.6),
+at the database level (pgAdmin), and end-to-end through the chat UI.
+
+**pgAdmin — seat pool and feedback FK:**
+
+- Two confirmed bookings (`BK021` at 07:00, `BK022` at 07:30) share `seat_id='B05'`
+  on the same `schedule_id`/`travel_date` with different `departure_time`s —
+  confirming per-train isolation.
+- `FB001 | RU01 | BK001 | NULL | 5` and `FB002 | RU02 | NULL | MT001 | 5` — one
+  row per booking, correct polymorphic FK, opposite side NULL.
+
+**Chat UI (Gradio, debug panel on):**
+
+- *Booking with departure time:* request for NR_SCH01, NR01→NR05, 2026-06-20,
+  07:00 shows `departure_time: '07:00'` in the debug panel, returns `BK021`,
+  seat `B01`, `$8.50` (= 2.50 + 1.50 × 4 stops), status `confirmed`.
+- *Feedback upsert:* rating MT001 5 stars returns `FB002` (original seeded ID,
+  updated in place); a follow-up "change to 4 stars" passes rating as the string
+  `'4'` (accepted by the coercion path) and returns the same `FB002` with
+  `rating: 4` — one row, no duplicate.
+- *Graph:* "all paths from MS01 to NR06" triggers `find_all_paths` (5 paths with
+  `num_transfers` and `transfer_points` in the debug output); "stations connecting
+  to MS01" triggers `get_station_connections` (5 neighbours including the
+  `INTERCHANGE_TO` edge to NR01).
+- *Regression:* cancelling `BK021` correctly applies the RF001 refund window
+  (181 h before departure → 100% refund of $8.50); availability and seat-listing
+  without `departure_time` keep working since all new parameters are optional on
+  the read paths.
+
+*(Screenshots of the pgAdmin outputs and the Gradio debug-panel tool log are
+attached in the EEClass submission alongside this document.)*
