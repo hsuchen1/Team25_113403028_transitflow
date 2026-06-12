@@ -382,7 +382,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
     """
     Find all stations within N hops of a delayed station using new relationship types.
     """
-    if not delayed_station_id or hops < 1:
+    if not delayed_station_id or hops < 0:
         return []
     
     is_metro = delayed_station_id.startswith("MS")
@@ -395,7 +395,7 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
             MATCH (start:{node_label} {{station_id: $delayed_station_id}})
             CALL apoc.path.expandConfig(start, {{
                 relationshipFilter: 'METRO_LINK>|RAIL_LINK>|INTERCHANGE_TO>',
-                minLevel: 1,
+                minLevel: 0,
                 maxLevel: {hops}
             }})
             YIELD path
@@ -409,22 +409,21 @@ def query_delay_ripple(delayed_station_id: str, hops: int = 2) -> list[dict]:
                 nodes = path.nodes
                 relationships = path.relationships
                 
-                if len(nodes) > 1:
-                    affected_node = nodes[-1]
-                    station_id = affected_node["station_id"]
-                    hops_away = len(nodes) - 1
-                    
-                    lines = set()
-                    for rel in relationships:
-                        if rel.get("line"):
-                            lines.add(rel["line"])
-                    
-                    if station_id not in affected_stations or hops_away < affected_stations[station_id]["hops_away"]:
-                        affected_stations[station_id] = {
-                            "name": affected_node.get("name", "Unknown"),
-                            "hops_away": hops_away,
-                            "lines_affected": sorted(list(lines))
-                        }
+                affected_node = nodes[-1]
+                station_id = affected_node["station_id"]
+                hops_away = len(nodes) - 1
+                
+                lines = set()
+                for rel in relationships:
+                    if rel.get("line"):
+                        lines.add(rel["line"])
+                
+                if station_id not in affected_stations or hops_away < affected_stations[station_id]["hops_away"]:
+                    affected_stations[station_id] = {
+                        "name": affected_node.get("name", "Unknown"),
+                        "hops_away": hops_away,
+                        "lines_affected": sorted(list(lines))
+                    }
     
     result_list = [
         {
