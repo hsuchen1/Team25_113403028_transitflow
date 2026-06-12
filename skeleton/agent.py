@@ -1,7 +1,5 @@
-# TASK 6 EXTENSION: departure_time booking flow
-# Added query_departure_times tool so users can select a specific train departure
-# before booking, enabling correct departure_time to be stored in national_rail_bookings.
 """
+# TASK 6 EXTENSION: new graph queries "query_all_paths_between" and new relational query "query_departure_times"
 TransitFlow — Intelligent Agent
 ================================
 This is the brain of the system.
@@ -303,7 +301,7 @@ TOOLS = [
         },
         "required": ["station_id"],
     },
-    # Added Tool: Task 6 Extension (Find all paths between two stations)
+    # Modify because it has not yet been implemented.
     {
         "name": "find_all_paths",
         "description": (
@@ -318,7 +316,7 @@ TOOLS = [
         },
         "required": ["origin_id", "destination_id"],
     },
-    # Added Tool: Task 6 Extension ( Station Connections lookup )
+    # Task 6 Extension: Station Connections lookup
     {
         "name": "get_station_connections",
         "description": "List all direct next-stop connections, relationship types, and travel lines from a specific station.",
@@ -526,10 +524,6 @@ def _execute_tool(
             )
 
         elif tool_name == "find_all_paths":
-            # try:
-            #     limit_val = int(params.get("limit", 5))
-            # except (ValueError, TypeError):
-            #     limit_val = 5
 
             result = query_all_paths_between(
                 origin_id=params["origin_id"],
@@ -761,7 +755,6 @@ JSON:"""
         if debug:
             debug_info.append(f"**Fallback:** {reason} → {name}({params})")
 
-    # 1. 宣告新舊路由工具的所有關鍵字
     _has_all = "all" in _lower or "every" in _lower or "list" in _lower
     _has_path_keyword = "path" in _lower or "route" in _lower or "option" in _lower
     _is_asking_all_paths = _has_all and _has_path_keyword
@@ -770,32 +763,28 @@ JSON:"""
                        "best route", "how to get", "directions from", "route from", "route to",
                        "get from", "travel from", "way from", "path from"}
     
-    # 這裡加上限制：如果是查詢「所有路徑」，就不要判定為普通單一 route
     _is_route = (
         (any(kw in _lower for kw in _route_triggers) or (_two_stations and "route" in _lower))
         and not _is_asking_all_paths
     )
 
-    # 條件 A: 查詢「所有路徑/多個選項」（新工具 1）
     if _is_asking_all_paths and _two_stations and not _tool_selected("find_all_paths", "origin_id", "destination_id"):
         _fallback("find_all_paths",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "limit": 5},
                   "all paths query")
 
-    # 條件 B: 查詢「車站連通性/直接連通/下一站」（新工具 2）
     elif any(kw in _lower for kw in {"connections", "next stops", "direct lines", "connect to"}) and len(_station_ids) == 1 and not _tool_selected("get_station_connections", "station_id"):
         _fallback("get_station_connections",
                   {"station_id": _station_ids[0].upper()},
                   "station connections query")
 
-    # 條件 C: 原本的單一路徑防呆（舊工具）
     elif _is_route and _two_stations and not _tool_selected("find_route", "origin_id", "destination_id"):
         _opt = "cost" if any(kw in _lower for kw in ["cheap", "cheapest", "lowest cost"]) else "time"
         _fallback("find_route",
                   {"origin_id": _station_ids[0].upper(), "destination_id": _station_ids[1].upper(), "optimise_by": _opt},
                   "route query")
 
-    # 2. Availability / trains / schedules between two stations
+    # Availability / trains / schedules between two stations
     elif not tool_calls and _two_stations:
         _avail_triggers = {"train", "trains", "service", "services", "run from", "runs from",
                            "schedule", "timetable", "available", "availability"}
@@ -814,7 +803,7 @@ JSON:"""
             _tool = "check_national_rail_availability" if o.startswith("NR") else "check_metro_availability"
             _fallback(_tool, _params, "availability query")
 
-    # 3. Personal booking history — requires login
+    # Personal booking history — requires login
     if current_user_email and not tool_calls:
         _personal_triggers = {"my booking", "my ticket", "my trip", "my journey", "my history",
                                "my reservation", "show booking", "view booking", "check booking",
@@ -822,7 +811,7 @@ JSON:"""
         if any(kw in _lower for kw in _personal_triggers):
             _fallback("get_user_bookings", {}, "personal booking query")
 
-    # Step 2: Execute each tool call against the real databases
+    # Execute each tool call against the real databases
     tool_results = []
     for call in tool_calls:
         tool_name = call.get("name", "")
@@ -854,7 +843,7 @@ JSON:"""
             "summary": summary,
         })
 
-    # Step 3: Normalise raw tool results to plain English using the LLM, then
+    # Normalise raw tool results to plain English using the LLM, then
     # compose the final answer.  The normalisation call replaces hand-crafted
     # per-tool formatters: any tool a student adds works automatically.
     _DB_KEYWORDS = {"booking", "ticket", "schedule", "fare", "route", "seat",
