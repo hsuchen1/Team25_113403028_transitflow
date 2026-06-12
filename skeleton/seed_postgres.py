@@ -437,10 +437,10 @@ def seed_user_credentials(cur):
       needed in the schema.
     - Passwords in the JSON are plaintext (development mock data only). Hashing
       happens here at seed time so the database never contains plaintext credentials.
-    - secret_answer is also hashed with argon2 and compared case-sensitively.
-      This is an intentional security design: the security question serves as an
-      account recovery mechanism, and requiring an exact match reduces the risk
-      of brute-force guessing.
+    - secret_answer is lowercased before hashing (see line below) so that
+      verify_secret_answer can compare case-insensitively. This is an intentional
+      UX design: users should not be locked out of account recovery because of
+      capitalisation differences (e.g. "Smith" vs "smith").
     - user_credentials.user_id has a UNIQUE constraint, so ON CONFLICT (user_id)
       makes the seeder idempotent while keeping c_id as the internal surrogate key.
     - This function uses per-row cur.execute() rather than execute_values() because
