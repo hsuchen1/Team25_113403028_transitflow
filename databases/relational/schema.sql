@@ -1,5 +1,8 @@
 -- ============================================================
 --  TransitFlow PostgreSQL Schema
+--  # TASK 6 EXTENSION: UNIQUE constraints added to both feedback FK columns
+--  (national_rail_booking_id, metro_trip_id) to support the upsert write path
+--  in execute_submit_feedback — see TASK6.md and DESIGN_DOC.md Section 7.2(d).
 --  Seed data is loaded separately by: python skeleton/seed_postgres.py
 --
 --  TWO ROLES:
@@ -193,25 +196,41 @@ CREATE TABLE metro_trips (
 CREATE TABLE payments (
     id SERIAL PRIMARY KEY,
     payment_id VARCHAR(20) UNIQUE NOT NULL,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+    -- Polymorphic target: exactly one of the two FKs below is populated (see CHECK).
+    -- UNIQUE on each FK enforces at most one payment per booking/trip at the DB
+    -- level (previously only guaranteed by the execute_booking write path).
+    -- PostgreSQL UNIQUE ignores NULLs, so the many NULL rows on each side are fine.
+    national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     amount_usd NUMERIC(10,2),
     method VARCHAR(50),
     status VARCHAR(20),
     paid_at TIMESTAMPTZ,
-    deleted_at TIMESTAMPTZ
+    deleted_at TIMESTAMPTZ,
+    -- Mutual exclusivity: a payment pays for a rail booking XOR a metro trip,
+    -- never both and never neither. Combined with ON DELETE SET NULL this also
+    -- means a hard DELETE of a referenced booking/trip is blocked (the cascaded
+    -- SET NULL would violate this CHECK and abort) — intended, since financial
+    -- records must never be orphaned and the business rule mandates soft delete.
+    CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)
 );
 
 CREATE TABLE feedback (
     id SERIAL PRIMARY KEY,
     feedback_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+    national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     rating INTEGER,
     comment TEXT,
     submitted_at TIMESTAMPTZ,
-    deleted_at TIMESTAMPTZ
+    deleted_at TIMESTAMPTZ,
+    -- Same XOR rule as payments: feedback targets a rail booking or a metro trip,
+    -- never both/neither. UNIQUE on each FK enforces at most one feedback row per
+    -- booking/trip (0..1). execute_submit_feedback uses ON CONFLICT DO UPDATE
+    -- (upsert) so a repeat submission updates the existing row rather than
+    -- inserting a duplicate — "submit feedback" effectively acts as "create or replace".
+    CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)
 );
 
 -- ============================================================

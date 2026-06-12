@@ -222,25 +222,31 @@ CREATE TABLE metro_trips (
 CREATE TABLE payments (
     id SERIAL PRIMARY KEY,
     payment_id VARCHAR(20) UNIQUE NOT NULL,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+    -- UNIQUE per FK: at most one payment per booking/trip (NULLs ignored by UNIQUE)
+    national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     amount_usd NUMERIC(10,2),
     method VARCHAR(50),
     status VARCHAR(20),
     paid_at TIMESTAMPTZ,
-    deleted_at TIMESTAMPTZ
+    deleted_at TIMESTAMPTZ,
+    -- XOR: exactly one of the two FK targets is populated
+    CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)
 );
 
 CREATE TABLE feedback (
     id SERIAL PRIMARY KEY,
     feedback_id VARCHAR(20) UNIQUE NOT NULL,
     user_id VARCHAR(20) REFERENCES users(user_id) ON DELETE CASCADE,
-    national_rail_booking_id VARCHAR(20) REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
-    metro_trip_id VARCHAR(20) REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
+    national_rail_booking_id VARCHAR(20) UNIQUE REFERENCES national_rail_bookings(booking_id) ON DELETE SET NULL,
+    metro_trip_id VARCHAR(20) UNIQUE REFERENCES metro_trips(trip_id) ON DELETE SET NULL,
     rating INTEGER,
     comment TEXT,
     submitted_at TIMESTAMPTZ,
-    deleted_at TIMESTAMPTZ
+    deleted_at TIMESTAMPTZ,
+    -- XOR as in payments; UNIQUE on each FK enforces 0..1 per booking/trip.
+    -- execute_submit_feedback uses ON CONFLICT DO UPDATE (upsert).
+    CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)
 );
 ```
 
@@ -317,6 +323,8 @@ def query_all_paths_between(origin_id: str, destination_id: str, network: str = 
   - **Decision:** Use `TIMESTAMPTZ` for all datetimes. **Why:** Required by grading criteria.
   - **Decision:** Added `UNIQUE(station_id, line)` to station_lines tables and explicitly defined `ON DELETE` behavior. **Why:** To ensure seeding idempotency and referential integrity.
   - **Decision:** Separate nullable FKs for polymorphic relationship (`payments` and `feedback`). **Why:** Allows DB to enforce referential integrity.
+  - **Decision:** Added `UNIQUE` to both FK columns of `feedback` and changed `execute_submit_feedback` to upsert (`ON CONFLICT … DO UPDATE`). **Why:** Without UNIQUE, a repeat `submit_feedback` call (e.g. user wanting to change their rating) inserted a second row for the same booking, leaving two conflicting feedback records. Upsert makes the tool idempotent — feedback cardinality is now 0..1 per booking/trip (updated in ERD and Section 1 notes). Requires `docker compose down -v` + full re-seed after pulling.
+  - **Decision:** Hardened the polymorphic FK pattern with DB-level constraints: `CHECK (num_nonnulls(national_rail_booking_id, metro_trip_id) = 1)` on both `payments` and `feedback` (exactly one target, never both/neither), plus `UNIQUE` on each payments FK (at most one payment per booking/trip; PostgreSQL UNIQUE ignores NULLs). `feedback` deliberately has no FK UNIQUE — a booking may receive multiple feedback rows. **Why:** These rules were previously enforced only by the `execute_booking`/seeder write paths; moving them into the schema makes them hold for any writer. Side effect: combined with `ON DELETE SET NULL`, a hard DELETE of a referenced booking/trip is now blocked by the CHECK — intended, since the business rule mandates soft delete and financial records must not be orphaned. Verified `payments.json` (40 rows) has no duplicate `booking_id` and `feedback.json` has no missing `booking_id`, so seeding is unaffected. Requires `docker compose down -v` + full re-seed after pulling.
   - **Decision:** Changed `date_of_birth DATE` to `year_of_birth SMALLINT` in `users` table. **Why:** The registration form (`register_user`) only collects year of birth; storing a full DATE would require fabricating month/day, which is semantically incorrect. Seeding extracts the year from the mock data's full date string.
 - [x] Agent modifications (Task 6 Extension):
   - **Decision:** Modified `skeleton/agent.py` to add `get_departure_times` tool and `departure_time` parameter to `make_booking`. **Why:** The original agent had no way to show users available train departure times or pass a selected time to `execute_booking`. Without this, `departure_time` in `national_rail_bookings` could only be filled with `first_train_time` (inaccurate). The extension adds `query_departure_times` to `queries.py` and wires it through the agent so users can select the exact train they want before booking.
