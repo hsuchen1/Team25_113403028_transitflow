@@ -5,13 +5,13 @@ relational schema (PostgreSQL), the graph model (Neo4j), the vector / RAG layer
 (pgvector), AI tool usage evidence, design reflection, and the Task 6 optional
 extension (Section 7).
 
-| | |
-|---|---|
-| **Relational schema** | `databases/relational/schema.sql` |
-| **Relational queries** | `databases/relational/queries.py` |
-| **Graph seed / queries** | `skeleton/seed_neo4j.py`, `databases/graph/queries.py` |
+|                                 |                                                              |
+| ------------------------------- | ------------------------------------------------------------ |
+| **Relational schema**     | `databases/relational/schema.sql`                          |
+| **Relational queries**    | `databases/relational/queries.py`                          |
+| **Graph seed / queries**  | `skeleton/seed_neo4j.py`, `databases/graph/queries.py`   |
 | **Vector seed / queries** | `skeleton/seed_vectors.py`, `query_policy_vector_search` |
-| **Task 6 file manifest** | `TASK6.md` (repo root) |
+| **Task 6 file manifest**  | `TASK6.md` (repo root)                                     |
 
 ---
 
@@ -177,6 +177,7 @@ erDiagram
 ```
 
 **Notes on cardinality:**
+
 - `users` ↔ `user_credentials` is 1:0..1 — every user *should* have exactly one
   credential record, but the FK is nullable-by-absence (no row until registration
   completes), so it is modelled as optional.
@@ -219,8 +220,7 @@ intermediate stations, and each stop has its own `stop_order` and
 
 A naive design would store this sequence as a single array/JSONB column on the
 schedule row, e.g. `stops_in_order: ["NR01", "NR02", "NR03"]`. This violates **1NF**
-(the column is not atomic — it hides a repeating group of `(station_id, stop_order,
-travel_time)` tuples inside one cell) and makes it impossible for the database to
+(the column is not atomic — it hides a repeating group of `(station_id, stop_order, travel_time)` tuples inside one cell) and makes it impossible for the database to
 enforce that `(schedule_id, station_id)` is unique, or to query "which schedules pass
 through station X" without a JSON scan.
 
@@ -349,11 +349,11 @@ rail nodes. Cross-network queries simply match on `station_id` without a label.
 **Relationships — physical adjacency.** Three relationship types model the three
 physically different kinds of connection:
 
-| Relationship | Connects | Properties |
-|---|---|---|
-| `METRO_LINK` | adjacent metro stations | `line`, `travel_time_min`, `cost_usd` |
-| `RAIL_LINK` | adjacent rail stations | `line`, `travel_time_min`, `cost_standard_usd`, `cost_first_usd` |
-| `INTERCHANGE_TO` | a metro station ↔ its paired rail station (created in both directions) | `travel_time_min: 5` |
+| Relationship       | Connects                                                                | Properties                                                               |
+| ------------------ | ----------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `METRO_LINK`     | adjacent metro stations                                                 | `line`, `travel_time_min`, `cost_usd`                              |
+| `RAIL_LINK`      | adjacent rail stations                                                  | `line`, `travel_time_min`, `cost_standard_usd`, `cost_first_usd` |
+| `INTERCHANGE_TO` | a metro station ↔ its paired rail station (created in both directions) | `travel_time_min: 5`                                                   |
 
 Adjacency is a relationship (not a node or a property) because it is exactly what a
 traversal follows: Dijkstra repeatedly expands the cheapest *edge* out of the
@@ -509,7 +509,6 @@ full table scan.
    ORDER BY embedding <=> %s::vector                -- nearest first (HNSW index)
    LIMIT 3;                                         -- VECTOR_TOP_K
    ```
-
 3. **Retrieved documents.** The top-3 documents above the threshold come back as
    `{title, category, content, similarity}` rows; the agent truncates each content to
    800 characters and the result is flattened to readable key-value text by the
@@ -578,8 +577,7 @@ conventions, and decision log) as the first message, per `TEAM_AI_WORKFLOW.md`.
   used natural keys (`station_id VARCHAR(20) PRIMARY KEY`, etc.) on all transit
   tables. We needed to retrofit `id SERIAL` surrogate keys *without* breaking the
   existing FKs and `queries.py`.
-- **Prompt:** *"Refactor this schema.sql so every table gets `id SERIAL PRIMARY
-  KEY`, keeping the business identifiers as UNIQUE NOT NULL and keeping all FKs
+- **Prompt:** *"Refactor this schema.sql so every table gets `id SERIAL PRIMARY KEY`, keeping the business identifiers as UNIQUE NOT NULL and keeping all FKs
   pointing at the business identifiers so queries.py does not change. Then update
   execute_booking so generated booking/payment IDs follow the seed-data convention
   (BK001, PM001...) instead of random suffixes."*
@@ -905,9 +903,9 @@ FROM feedback WHERE metro_trip_id = 'MT001';
 ### 7.6 Graph queries — all paths and station connections
 
 **Motivation.** The original graph layer only supported shortest-path queries.
-A user asking "what are all the ways I can get from MS01 to NR06?" or "which
-stations can I transfer to from Central Square?" had no tool to call. Real journey
+A user asking "what are all the ways I can get from MS01 to NR06?" had no tool to call. Real journey
 planners surface alternatives so passengers can choose by number of transfers, total
+
 time, or line preference — the single shortest path is not always the preferred one.
 
 **What changed.** Two new functions in `databases/graph/queries.py`:
@@ -917,9 +915,6 @@ time, or line preference — the single shortest path is not always the preferre
   path, and post-processes each result to compute `num_transfers` and
   `transfer_points`, distinguishing *network interchanges* (`INTERCHANGE_TO` edges)
   from *line changes* (consecutive `LINK` edges whose `line` property differs).
-
-- **`query_station_connections(station_id)`** — returns each direct neighbour with
-  its relationship type, line, `travel_time_min`, and edge cost.
 
 **Example.**
 
